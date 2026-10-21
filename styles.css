@@ -91,9 +91,9 @@ ul.tight{margin:4px 0;padding-left:20px}
 .glass-preview svg{display:block;width:100%;height:auto}
 .glass-preview.busy::after{content:"Updating…";position:absolute;right:8px;top:8px;background:rgba(0,0,0,.7);color:#fff;font-size:12px;padding:3px 8px;border-radius:8px}
 .seg{display:inline-flex;background:var(--panel2);border-radius:12px;padding:3px;gap:3px}
-.seg button{border:0;background:transparent;min-height:38px;border-radius:9px}
+.seg button{border:0;background:transparent;min-height:44px;border-radius:9px}
 .seg button[aria-pressed=true]{background:var(--bg);color:var(--accent)}
-.ctl{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px}
+.ctl{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px 12px}
 .ctl label{font-size:13px;color:var(--muted);display:flex;flex-direction:column;gap:4px}
 .ctl input[type=range]{width:100%;height:44px;accent-color:var(--accent)}
 .ctl input[type=number],.ctl select{min-height:44px;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:0 8px}
@@ -117,3 +117,6 @@ textarea.doc-text{width:100%;min-height:180px;background:var(--bg);color:var(--t
 .kv input{width:100%;min-height:40px;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:0 8px}
 .month{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)}
 .ctl input:not([type]),.ctl input[type=text]{min-height:44px;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:0 8px;color:var(--text)}
+main,.top{padding-left:max(12px,env(safe-area-inset-left));padding-right:max(12px,env(safe-area-inset-right))}
+.ctl label{min-width:0}.ctl select,.ctl input:not([type=checkbox]):not([type=radio]){width:100%;min-width:0;max-width:100%}
+.stage{max-height:calc(100vh - 372px - env(safe-area-inset-top) - env(safe-area-inset-bottom));max-height:calc(100svh - 372px - env(safe-area-inset-top) - env(safe-area-inset-bottom));min-height:240px}

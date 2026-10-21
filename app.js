@@ -1,5 +1,5 @@
 /* Scan Lab — core: camera, modes, food/materials analysis, food log, history, settings. */
-const APP_VERSION = 'v1';
+const APP_VERSION = 'v2';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -119,6 +119,14 @@ function updateButtons() {
   $('#aiDisclaimer').hidden = !(S.mode === 'auto' || S.mode === 'food' || S.mode === 'materials');
   if (S.mode === 'measure') measureSetupHelp(); else $('#modeHelp').textContent = m.help;
 }
+/* Keep the shutter above the tab bar, in thumb reach, without scrolling (iPhone SE → Pro Max). */
+function fitStage() {
+  const st = $('.stage'), tabs = $('.tabs'); if (!st || !st.offsetParent) return;
+  const top = st.getBoundingClientRect().top + scrollY, cc = $('.cam-controls'), ch = cc ? cc.offsetHeight + 20 : 92;
+  const avail = innerHeight - top - (tabs ? tabs.offsetHeight : 60) - ch - 6;
+  st.style.maxHeight = Math.round(Math.max(220, Math.min(avail, innerHeight * 0.62))) + 'px';
+}
+addEventListener('resize', () => requestAnimationFrame(fitStage)); addEventListener('orientationchange', () => setTimeout(fitStage, 300));
 function setMode(mode) {
   if (!MODES[mode]) return; const prev = S.mode; S.mode = mode; localStorage.setItem('scanMode', mode);
   $$('.modes button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.mode === mode)));
@@ -131,6 +139,7 @@ function applyCamArea() {
   if (!need) { stopCamera(); if (S.mode === 'voice') voiceOpen($('#result')); else measureFileOpen($('#result')); }
   else if (S.view === 'scan' && !S.photos.length && !S.live) goLive();
   else if (S.photos.length) showStill(S.photos[S.photos.length - 1]);
+  fitStage(); requestAnimationFrame(fitStage);
 }
 
 /* ---------- analysis (auto / food / materials) ---------- */
@@ -270,7 +279,7 @@ async function exportJSON() {
   const data = { app: 'Scan Lab', version: APP_VERSION, exportedAt: new Date().toISOString(), note: 'Exports never include your API key or full-size photos.', scans, foodLog: await DB.all('log') };
   const txt = JSON.stringify(data, null, 2);
   if (/xai-|sk-/.test(aiCfg().key) && aiCfg().key && txt.includes(aiCfg().key)) throw new Error('refusing to export key');
-  download('scan-lab-export-' + todayStr() + '.json', txt, 'application/json'); toast('Exported ' + scans.length + ' scans');
+  await shareOrDownload('scan-lab-export-' + todayStr() + '.json', txt, 'application/json'); toast('Exported ' + scans.length + ' scans');
 }
 
 /* ---------- sheets / settings ---------- */
@@ -294,6 +303,7 @@ async function testAI() {
 function setView(v) {
   S.view = v; $$('.view').forEach(s => s.hidden = s.id !== 'view-' + v);
   $$('.tabs button').forEach(b => b.toggleAttribute('aria-current', b.dataset.view === v)); $$('.tabs button').forEach(b => b.dataset.view === v ? b.setAttribute('aria-current', 'page') : 0);
+  if (v === 'scan') requestAnimationFrame(fitStage);
   if (v === 'scan') { if (!S.photos.length) goLive(); } else { stopCamera(); voiceStopIfIdle(); }
   if (v === 'log') renderLog(); if (v === 'history') renderHistory(); if (v === 'receipts') renderReceipts();
   window.scrollTo(0, 0);

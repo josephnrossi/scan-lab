@@ -11,6 +11,7 @@ const near = (a, b, tol, m) => assert(Math.abs(a - b) <= tol, `${m}: ${a} not wi
 const fx = f => path.join(FX, f);
 const DEVS = [
   { name: 'webkit-iphone15', type: webkit, ctx: { ...devices['iPhone 15'] } },
+  { name: 'webkit-iphonese', type: webkit, ctx: { ...devices['iPhone SE (3rd gen)'] } },
   { name: 'webkit-ipadpro11', type: webkit, ctx: { ...devices['iPad Pro 11'] } },
   { name: 'chromium', type: chromium, ctx: { viewport: { width: 393, height: 852 }, deviceScaleFactor: 2, isMobile: false, hasTouch: true }, launch: { args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', '--enable-unsafe-swiftshader'] } },
 ];
@@ -45,8 +46,8 @@ T['loads with no errors, manifest, dark theme'] = async ({ page, errors }) => {
   assert(!errors.length, errors.join('; '));
 };
 T['service worker caches shell and works offline'] = { sw: true, fn: async ({ page, ctx }) => {
-  await page.evaluate(() => navigator.serviceWorker.ready); await page.waitForFunction(async () => (await caches.keys()).includes('scan-lab-v1'), null, { timeout: 15000 });
-  const n = await page.evaluate(async () => (await (await caches.open('scan-lab-v1')).keys()).length); assert(n >= 20, 'cached ' + n);
+  await page.evaluate(() => navigator.serviceWorker.ready); await page.waitForFunction(async () => (await caches.keys()).includes('scan-lab-v2'), null, { timeout: 15000 });
+  const n = await page.evaluate(async () => (await (await caches.open('scan-lab-v2')).keys()).length); assert(n >= 20, 'cached ' + n);
   await ctx.setOffline(true); await page.reload(); await page.waitForSelector('.modes button'); assert((await page.title()) === 'Scan Lab', 'offline reload'); await ctx.setOffline(false);
 } };
 /* ---------- camera ---------- */
@@ -290,6 +291,55 @@ T['voice: records with MediaRecorder, chunks saved every 2s'] = { only: 'chromiu
   await page.evaluate(() => localStorage.setItem('voiceConsent', '1')); await mode(page, 'voice'); await page.click('#vRec'); await page.waitForSelector('#vStop');
   await page.waitForTimeout(4600); const n = await page.evaluate(async () => (await DB.all('chunks')).length); assert(n >= 2, 'chunks ' + n);
   await page.click('#vStop'); await page.waitForSelector('#vChart', { timeout: 30000 }); assert(await page.evaluate(async () => (await DB.all('chunks')).length) === 0, 'chunks cleaned');
+} };
+
+/* ---------- iPhone portrait layout ---------- */
+const phoneOnly = 'iphone';
+async function layoutCheck(page, where) {
+  const r = await page.evaluate(() => {
+    const W = innerWidth, over = [...document.querySelectorAll('body *')].filter(e => { if (!e.offsetParent && getComputedStyle(e).position !== 'fixed') return false; const b = e.getBoundingClientRect(); return b.width && (b.right > W + 1 || b.left < -1) && !e.closest('.pages-row,.hscroll,svg'); }).map(e => e.tagName + (e.id ? '#' + e.id : '') + '.' + e.className).slice(0, 4);
+    const small = [...document.querySelectorAll('button,select,input:not([type=range]):not([type=checkbox]):not([type=file]):not([type=radio]),[role=tab]')].filter(b => b.offsetParent && b.getBoundingClientRect().height < 43.5 && !b.closest('.pages-row')).map(b => (b.id || b.textContent.trim()).slice(0, 20)).slice(0, 5);
+    return { sw: document.documentElement.scrollWidth, W, over, small };
+  });
+  assert(r.sw <= r.W, `${where}: horizontal overflow ${r.sw}>${r.W} ${r.over.join(' ')}`); assert(!r.over.length, `${where}: off-screen ${r.over.join(' ')}`); assert(!r.small.length, `${where}: <44pt ${r.small.join('|')}`);
+}
+T['iPhone: every mode fits portrait, no overflow, 44pt, safe areas, one-handed shutter'] = { only: phoneOnly, fn: async ({ page, dev }) => {
+  const css = await page.evaluate(() => [...document.styleSheets].flatMap(s => [...s.cssRules].map(r => r.cssText)).join('\n'));
+  for (const side of ['top', 'bottom', 'left', 'right']) assert(css.includes('safe-area-inset-' + side), 'safe-area ' + side);
+  assert((await page.getAttribute('meta[name=viewport]', 'content')).includes('viewport-fit=cover'), 'viewport-fit');
+  const mb = await page.$$eval('.modes button', bs => bs.map(b => { const r = b.getBoundingClientRect(); return [r.left, r.right, r.height, b.scrollWidth <= b.clientWidth + 1, innerWidth]; }));
+  assert(mb.every(([l, r, h, fit, W]) => l >= 0 && r <= W && h >= 44 && fit), 'mode switcher fits ' + JSON.stringify(mb));
+  const modes = await page.$$eval('.modes button', bs => bs.map(b => b.dataset.mode));
+  let i = 0;
+  for (const m of modes) {
+    if (m === 'voice') await page.evaluate(() => localStorage.setItem('voiceConsent', '1'));
+    await mode(page, m); await page.evaluate(() => scrollTo(0, 0)); await page.waitForTimeout(150);
+    await layoutCheck(page, m);
+    if (!(await page.evaluate(() => MODES[S.mode].nocam))) {
+      const g = await page.$eval('#btnShutter', b => { const r = b.getBoundingClientRect(), tab = document.querySelector('.tabs').getBoundingClientRect(); return { top: r.top, bottom: r.bottom, tabTop: tab.top, H: innerHeight, w: r.width }; });
+      assert(g.bottom <= g.tabTop - 2 && g.top >= g.H * 0.4, `${m}: shutter one-handed, above tab bar without scrolling ${JSON.stringify(g)}`); assert(g.w >= 60, 'big shutter');
+    }
+    await shot(page, dev, `mode-${String(++i).padStart(2, '0')}-${m}`);
+  }
+  await page.click('[data-view=log]').catch(() => {}); await page.click('#btnSettings').catch(() => {}); await page.waitForTimeout(200); await layoutCheck(page, 'settings'); await shot(page, dev, 'mode-settings');
+} };
+T['iPhone: stained-glass preview + 3D viewer usable at phone size, exports via iOS share sheet'] = { only: phoneOnly, key: true, fn: async ({ page, dev }) => {
+  await page.evaluate(() => { window.__noShare = false; window.__shared = []; navigator.canShare = d => !!(d && d.files); navigator.share = async d => { window.__shared.push(...d.files.map(f => ({ name: f.name, type: f.type, size: f.size }))); }; });
+  await mode(page, 'glass'); await photo(page, 'flower.jpg'); await page.click('#btnAnalyze'); await page.waitForSelector('#gPrev svg [data-piece]', { timeout: 20000 });
+  await layoutCheck(page, 'glass result');
+  const pv = await page.$eval('#gPrev', e => { const r = e.getBoundingClientRect(); return [r.width, innerWidth]; }); assert(pv[0] >= pv[1] * 0.8 && pv[0] <= pv[1], 'glass preview near full width ' + pv);
+  await page.locator('#gPrev').scrollIntoViewIfNeeded(); await page.locator('#gPrev [data-piece]').first().tap().catch(() => {});
+  await shot(page, dev, 'phone-glass-preview');
+  for (const b of ['#gSVG', '#gPDF', '#gCut']) { await page.click(b); }
+  await page.waitForFunction(() => window.__shared.length >= 3, null, { timeout: 20000 });
+  const sh = await page.evaluate(() => window.__shared); assert(sh.some(f => f.name.endsWith('.svg') && f.type === 'image/svg+xml') && sh.filter(f => f.name.endsWith('.pdf') && f.type === 'application/pdf').length === 2, 'shared ' + JSON.stringify(sh));
+  assert(!(await page.evaluate(() => window.__lastDownload)), 'no download fallback when share is available');
+  await openModel(page, 'box-10x20x30cm.glb'); await page.waitForSelector('#mfStats >> text=L × W × H', { timeout: 20000 }); await page.waitForTimeout(500);
+  await layoutCheck(page, '3D viewer');
+  const cv = await page.$eval('#mfViewer canvas', c => { const r = c.getBoundingClientRect(); return { w: r.width, h: r.height, W: innerWidth, ta: getComputedStyle(c).touchAction }; });
+  assert(cv.w >= cv.W * 0.8 && cv.w <= cv.W && cv.h >= 250, '3D viewer size ' + JSON.stringify(cv)); assert(cv.ta === 'none', 'viewer owns touch gestures');
+  await page.locator('#mfViewer').scrollIntoViewIfNeeded(); await shot(page, dev, 'phone-3d-viewer');
+  await page.click('#mfPDF'); await page.waitForFunction(() => window.__shared.some(f => f.name.endsWith('.pdf') && /dim|scan|model/i.test(f.name)) || window.__shared.length >= 4, null, { timeout: 20000 });
 } };
 
 (async () => {
