@@ -1,0 +1,17 @@
+{
+  "name": "Scan Lab",
+  "short_name": "Scan Lab",
+  "description": "Point your camera at food or an object: Grok estimates nutrition or materials and compounds, or turns it into a beginner stained-glass pattern.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f1013",
+  "theme_color": "#0f1013",
+  "icons": [
+    {"src": "icons/icon-180.png", "sizes": "180x180", "type": "image/png"},
+    {"src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png"},
+    {"src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png"},
+    {"src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+  ]
+}

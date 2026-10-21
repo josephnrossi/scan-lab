@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0f1013">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Scan Lab">
+<title>Scan Lab</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/favicon.png">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="top">
+  <h1><img src="icons/icon-192.png" alt="" width="28" height="28"> Scan Lab</h1>
+  <button id="btnSettings" class="icon-btn" aria-label="Settings">⚙︎</button>
+</header>
+
+<main>
+  <section id="view-scan" class="view">
+    <div class="modes" role="tablist" aria-label="Scan mode">
+      <button role="tab" data-mode="auto" aria-selected="true">Auto</button>
+      <button role="tab" data-mode="food">Food</button>
+      <button role="tab" data-mode="materials">Materials</button>
+      <button role="tab" data-mode="glass">Glass</button>
+      <button role="tab" data-mode="measure">Measure</button>
+      <button role="tab" data-mode="docs">Docs</button>
+      <button role="tab" data-mode="voice">Voice</button>
+    </div>
+    <p id="modeHelp" class="mode-help"></p>
+
+    <div id="camArea">
+    <div class="stage" id="stage">
+      <video id="cam" playsinline muted autoplay></video>
+      <img id="still" alt="Captured photo" hidden>
+      <div id="camMsg" class="cam-msg">
+        <p id="camMsgText">Use the camera or pick a photo.</p>
+        <button id="btnStartCam" class="primary">Start camera</button>
+      </div>
+      <div id="retakeHint" class="retake-hint" hidden>Tap the photo to retake</div>
+    </div>
+
+    <div class="cam-controls">
+      <button id="btnLibrary" class="pill">🖼 Photos</button>
+      <button id="btnShutter" class="shutter" aria-label="Take photo"><span></span></button>
+      <button id="btnScale" class="pill" title="Add a second photo with a hand, coin or card next to it for scale">📏 Scale</button>
+    </div>
+    <input type="file" id="fileLib" accept="image/*" hidden>
+    <input type="file" id="fileCam" accept="image/*" capture="environment" hidden>
+    <input type="file" id="fileScale" accept="image/*" hidden>
+
+    <div id="pagesRow" class="pages-row" hidden></div>
+
+    <div id="scaleRow" class="scale-row" hidden>
+      <img id="scaleThumb" alt="Scale photo"><span>Scale photo added</span>
+      <button id="btnScaleRemove" class="pill">Remove</button>
+    </div>
+
+    <div id="aiInputs">
+      <label class="field"><span>Hint (optional)</span>
+        <input id="hint" type="text" maxlength="200" placeholder="e.g. “this is a 12 oz steak” or “it’s a cast-iron pan”" autocomplete="off"></label>
+      <button id="btnAnalyze" class="primary big" disabled>Analyze</button>
+      <p class="disclaimer" id="aiDisclaimer">AI visual estimate from a photo — not a lab or chemical analysis. Calories, compounds and percentages are educated guesses; a real composition reading needs a spectrometer (for example a pocket near-infrared scanner).</p>
+    </div>
+    </div>
+
+    <div id="result" aria-live="polite"></div>
+  </section>
+
+  <section id="view-log" class="view" hidden>
+    <div class="row between">
+      <button id="logPrev" class="icon-btn" aria-label="Previous day">‹</button>
+      <h2 id="logDate">Today</h2>
+      <button id="logNext" class="icon-btn" aria-label="Next day">›</button>
+    </div>
+    <div id="logTotals" class="card"></div>
+    <div id="logList"></div>
+  </section>
+
+  <section id="view-receipts" class="view" hidden>
+    <div class="row between">
+      <h2>Receipts</h2>
+      <button id="btnReceiptsCSV" class="pill">⤓ CSV</button>
+    </div>
+    <div id="rcptMonths"></div>
+    <div id="rcptList"></div>
+  </section>
+
+  <section id="view-history" class="view" hidden>
+    <div class="row between">
+      <h2>History</h2>
+      <button id="btnExport" class="pill">⤓ Export JSON</button>
+    </div>
+    <div id="histList"></div>
+  </section>
+</main>
+
+<nav class="tabs" aria-label="Sections">
+  <button data-view="scan" aria-current="page"><span>◉</span>Scan</button>
+  <button data-view="log"><span>☰</span>Food log</button>
+  <button data-view="receipts"><span>🧾</span>Receipts</button>
+  <button data-view="history"><span>⟲</span>History</button>
+</nav>
+
+<div id="sheetSettings" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="setTitle">
+  <div class="sheet-body">
+    <div class="row between"><h2 id="setTitle">Settings</h2><button class="icon-btn" data-close aria-label="Close">✕</button></div>
+    <p class="muted">Your API key is stored only on this device. It is never put in exports and is sent only to the provider you pick.</p>
+    <div id="pnKeyBox" class="card accent" hidden>
+      <p>Found the Grok key you saved in Pencil Notes.</p>
+      <button id="btnUsePN" class="primary">Use my Pencil Notes key</button>
+    </div>
+    <label class="field"><span>Provider</span>
+      <select id="setProvider"><option value="xai">xAI Grok</option><option value="openai">OpenAI</option><option value="custom">Custom (OpenAI-compatible)</option></select></label>
+    <label class="field"><span>Base URL</span><input id="setBase" type="url" autocomplete="off" spellcheck="false"></label>
+    <label class="field"><span>Model (must accept images)</span><input id="setModel" type="text" autocomplete="off" spellcheck="false"></label>
+    <label class="field"><span>API key</span><input id="setKey" type="password" autocomplete="off" spellcheck="false" placeholder="xai-…"></label>
+    <details><summary class="small muted">Voice: Whisper fallback (optional)</summary><label class="field"><span>OpenAI key used only if xAI speech-to-text fails</span><input id="setWhisper" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…"></label></details>
+    <div class="row gap">
+      <button id="btnSaveAI" class="primary">Save</button>
+      <button id="btnTestAI" class="pill">Test</button>
+      <button id="btnClearAI" class="pill danger">Remove key</button>
+    </div>
+    <p id="testResult" class="test-result" hidden></p>
+    <p class="muted small">Get a key at console.x.ai → API Keys. Never paste it into a chat.</p>
+    <p class="muted small" id="verLine"></p>
+  </div>
+</div>
+
+<div id="sheetDetail" class="sheet" hidden role="dialog" aria-modal="true">
+  <div class="sheet-body">
+    <div class="row between"><h2 id="detailTitle">Scan</h2><button class="icon-btn" data-close aria-label="Close">✕</button></div>
+    <img id="detailImg" class="detail-img" alt="">
+    <div id="detailBody"></div>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden><span id="toastText"></span><button id="toastUndo" hidden>Undo</button></div>
+
+<script src="db.js"></script>
+<script src="ai.js"></script>
+<script src="glass.js"></script>
+<script src="pdf.js"></script>
+<script src="glass-ui.js"></script>
+<script src="measure.js"></script>
+<script src="docs.js"></script>
+<script src="voice.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
