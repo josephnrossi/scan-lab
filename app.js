@@ -1,5 +1,5 @@
 /* Scan Lab — core: camera, modes, food/materials analysis, food log, history, settings. */
-const APP_VERSION = 'v2';
+const APP_VERSION = 'v3';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -48,6 +48,10 @@ const MODES = {
   auto: { btn: 'Analyze', help: 'Grok decides whether it’s food or an object.', ai: true },
   food: { btn: 'Analyze food', help: 'Calories, macros, ingredients and allergens — as estimated ranges.', ai: true },
   materials: { btn: 'Analyze materials', help: 'Materials, compounds, physical properties, safety and recycling.', ai: true },
+  defect: { btn: 'Check for damage', help: 'Damage & defect check: cracks, corrosion, wear, deformation, burns, contamination — up to 4 photos. AI visual estimate, not a certified inspection.', ai: true, multi: true },
+  count: { btn: 'Count', help: 'Counts bolts, parts, pills, tiles… with numbered markers you can correct. Works on-device without a key.', ai: false },
+  color: { btn: 'Match colors', help: 'Tap to sample colors: HEX/RGB/LAB, nearest names, approximate paint and glass matches. On-device.', ai: false },
+  compare: { btn: 'Compare', help: 'Take or pick two photos (before/after or part A vs B), or compare two saved scans.', ai: false, multi: true },
   glass: { btn: 'Make stained-glass pattern', help: 'Turns the photo into a beginner-friendly stained-glass pattern, right on this device.', ai: false },
   measure: { btn: 'Measure', help: 'Size from a photo with a coin, card or paper in the same plane. 3D: front, side and top photos.', ai: false, multi: true },
   docs: { btn: 'Extract text', help: 'Receipts, business cards, spec sheets and documents. Add pages for multi-page docs.', ai: true, multi: true },
@@ -88,13 +92,16 @@ function addPhoto(d) {
   const m = MODES[S.mode];
   if (m.multi && measureWants3D()) { if (S.photos.length >= 3) S.photos[2] = d; else S.photos.push(d); }
   else if (S.mode === 'docs') { if (S.photos.length >= 10) { toast('10 pages max per document'); return; } S.photos.push(d); }
+  else if (S.mode === 'defect') { if (S.photos.length >= 4) { toast('4 photos max'); return; } S.photos.push(d); }
+  else if (S.mode === 'compare') { if (S.photos.length >= 2) S.photos[1] = d; else S.photos.push(d); }
   else S.photos = [d];
   stopCamera(); showStill(d); renderPages(); updateButtons();
   $('#result').innerHTML = '';
   if (S.mode === 'docs' && S.photos.length === 1) toast('Page 1 added — tap the photo to add more pages, or Extract text');
+  if (S.mode === 'compare' && S.photos.length === 1) toast('Photo 1 added — tap the photo to take the second one');
 }
 function retake() {
-  if (S.mode === 'docs' || measureWants3D()) { /* keep pages; go live to add the next page/view (✕ on a thumbnail removes one) */ }
+  if (S.mode === 'docs' || S.mode === 'defect' || S.mode === 'compare' || measureWants3D()) { /* keep pages; go live to add the next page/view (✕ on a thumbnail removes one) */ }
   else S.photos = [];
   renderPages(); updateButtons(); goLive();
 }
@@ -102,17 +109,17 @@ function camNeeded() { return !(S.mode === 'voice' || (S.mode === 'measure' && m
 function goLive() { if (!camNeeded()) { stopCamera(); return; } if (localStorage.getItem('camOK') || S.stream) startCamera(); else { $('#still').hidden = true; $('#retakeHint').hidden = true; cam().hidden = true; camMsg('Use the camera or pick a photo.', true); $('#btnStartCam').textContent = 'Start camera'; } }
 function setScale(d) { S.scale = d; $('#scaleThumb').src = d || ''; $('#scaleRow').hidden = !d; }
 function renderPages() {
-  const row = $('#pagesRow'); const show = (S.mode === 'docs' || measureWants3D()) && S.photos.length > 0;
+  const row = $('#pagesRow'), pm = S.mode === 'docs' || S.mode === 'defect' || S.mode === 'compare'; const show = (pm || measureWants3D()) && S.photos.length > 0;
   row.hidden = !show; if (!show) { row.innerHTML = ''; return; }
-  const labels = S.mode === 'docs' ? S.photos.map((_, i) => 'p' + (i + 1)) : ['Front', 'Side', 'Top'];
+  const labels = S.mode === 'docs' ? S.photos.map((_, i) => 'p' + (i + 1)) : S.mode === 'defect' ? S.photos.map((_, i) => 'Photo ' + (i + 1)) : S.mode === 'compare' ? ['1', '2'] : ['Front', 'Side', 'Top'];
   row.innerHTML = S.photos.map((p, i) => `<div class="pg"><img src="${p}" alt="${labels[i]}"><em>${labels[i]}</em><button data-rm="${i}" aria-label="Remove ${labels[i]}">✕</button></div>`).join('') +
-    (S.mode === 'docs' ? `<button class="pill" id="btnAddPage">＋ Page</button>` : S.photos.length < 3 ? `<span class="muted small" style="align-self:center">Next: ${labels[S.photos.length]} view</span>` : '');
+    (S.mode === 'docs' || (S.mode === 'defect' && S.photos.length < 4) ? `<button class="pill" id="btnAddPage">＋ ${S.mode === 'docs' ? 'Page' : 'Photo'}</button>` : S.mode === 'defect' ? '' : S.mode === 'compare' ? (S.photos.length < 2 ? `<span class="muted small" style="align-self:center">Next: photo 2</span>` : '') : S.photos.length < 3 ? `<span class="muted small" style="align-self:center">Next: ${labels[S.photos.length]} view</span>` : '');
   $$('[data-rm]', row).forEach(b => b.onclick = () => { S.photos.splice(+b.dataset.rm, 1); renderPages(); updateButtons(); if (S.photos.length) showStill(S.photos[S.photos.length - 1]); else goLive(); });
   const ap = $('#btnAddPage'); if (ap) ap.onclick = () => goLive();
 }
 function updateButtons() {
   const m = MODES[S.mode], b = $('#btnAnalyze');
-  b.textContent = m.btn; b.disabled = !S.photos.length || !!S.busy;
+  b.textContent = m.btn; b.disabled = !S.photos.length || !!S.busy || (S.mode === 'compare' && S.photos.length < 2);
   $('#btnScale').hidden = !(S.mode === 'auto' || S.mode === 'food' || S.mode === 'materials');
   if ($('#btnScale').hidden) setScale(null);
   $('#hint').closest('.field').hidden = !(m.ai || S.mode === 'measure');
@@ -130,10 +137,12 @@ addEventListener('resize', () => requestAnimationFrame(fitStage)); addEventListe
 function setMode(mode) {
   if (!MODES[mode]) return; const prev = S.mode; S.mode = mode; localStorage.setItem('scanMode', mode);
   $$('.modes button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.mode === mode)));
-  const wasMulti = prev === 'docs' || (prev === 'measure'), nowMulti = mode === 'docs' || mode === 'measure';
+  const ML = ['docs', 'measure', 'defect', 'compare'], wasMulti = ML.includes(prev), nowMulti = ML.includes(mode);
   if (wasMulti && S.photos.length > 1 && !(nowMulti && prev === mode)) S.photos = S.photos.slice(-1);
-  $('#result').innerHTML = ''; renderPages(); updateButtons(); applyCamArea();
+  $('#result').innerHTML = ''; renderPages(); updateButtons(); applyCamArea(); compareHistCard();
+  const sel = $(`.modes [data-mode=${mode}]`); if (sel && sel.scrollIntoView) sel.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
+function compareHistCard() { if (S.mode !== 'compare' || S.photos.length >= 2 || $('#result').children.length) return; $('#result').innerHTML = `<div class="card"><div class="row gap wrap"><button class="pill" id="btnCmpHist">📚 Compare two saved scans</button><span class="muted small" style="align-self:center">e.g. two Measure scans compare by dimensions</span></div></div>`; $('#btnCmpHist').onclick = () => comparePickHistory($('#result')); }
 function applyCamArea() {
   const need = camNeeded(); $('#camArea').hidden = !need;
   if (!need) { stopCamera(); if (S.mode === 'voice') voiceOpen($('#result')); else measureFileOpen($('#result')); }
@@ -148,6 +157,10 @@ async function analyze() {
   if (S.mode === 'glass') return glassOpen($('#result'), { image: S.photos[0] });
   if (S.mode === 'measure') return measureOpen($('#result'), { photos: S.photos.slice(), hint: $('#hint').value.trim() });
   if (S.mode === 'docs') return docsAnalyze($('#result'), S.photos.slice());
+  if (S.mode === 'defect') return defectOpen($('#result'), { photos: S.photos.slice(), hint: $('#hint').value.trim() });
+  if (S.mode === 'count') return countOpen($('#result'), { image: S.photos[0], hint: $('#hint').value.trim() });
+  if (S.mode === 'color') return colorOpen($('#result'), { image: S.photos[0] });
+  if (S.mode === 'compare') { if (S.photos.length < 2) return toast('Add a second photo first'); return compareOpen($('#result'), { a: S.photos[0], b: S.photos[1], hint: $('#hint').value.trim() }); }
   const out = $('#result'), b = $('#btnAnalyze'), hint = $('#hint').value.trim();
   const ctl = new AbortController(); S.busy = ctl; b.disabled = true; b.innerHTML = '<span class="spinner"></span>Analyzing…';
   out.innerHTML = `<div class="card"><span class="spinner"></span>Grok is looking at your photo… <button class="pill" id="btnCancel">Cancel</button></div>`;
@@ -188,6 +201,10 @@ function renderScan(out, scan) {
   if (r.kind === 'measure') return measureOpen(out, { saved: scan });
   if (r.kind === 'doc') return docsRender(out, scan);
   if (r.kind === 'voice') return voiceOpen(out, scan);
+  if (r.kind === 'defect') return defectRender(out, scan);
+  if (r.kind === 'count') return countOpen(out, { saved: scan });
+  if (r.kind === 'color') return colorOpen(out, { saved: scan });
+  if (r.kind === 'compare') return compareOpen(out, { saved: scan });
 }
 function renderFood(out, scan) {
   const r = scan.result; let saveT;
@@ -259,10 +276,14 @@ function scanSummary(s) {
   if (r.kind === 'glass') return r.stats ? r.stats.pieces + ' pieces · ' + r.stats.difficulty : 'Pattern';
   if (r.kind === 'measure') return measureSummary(r);
   if (r.kind === 'doc') return docSummary(r);
+  if (r.kind === 'defect') return defectSummary(r);
+  if (r.kind === 'count') return (r.points || []).length + ' ' + (r.item || 'items') + (r.method === 'grok' ? ' · Grok' : ' · on-device');
+  if (r.kind === 'color') return colorSummary(r);
+  if (r.kind === 'compare') return compareSummary(r);
   if (r.kind === 'voice') return mmss(r.durMs) + ' · ' + (r.metrics || []).length + ' speaker' + ((r.metrics || []).length === 1 ? '' : 's');
   return '';
 }
-const KIND_ICON = { food: '🍽', materials: '🧪', glass: '🪟', measure: '📏', doc: '📄', voice: '🎙' };
+const KIND_ICON = { food: '🍽', materials: '🧪', glass: '🪟', measure: '📏', doc: '📄', voice: '🎙', defect: '🔍', count: '🔢', color: '🎨', compare: '⇆' };
 async function renderHistory() {
   const all = (await DB.all('scans')).sort((a, b) => b.at - a.at);
   $('#histList').innerHTML = all.length ? all.map(s => `<div class="hist-item"><button class="hist-open" data-open="${s.id}"><img src="${s.thumb || ''}" alt=""><div class="meta"><b>${KIND_ICON[s.kind] || ''} ${esc(s.title)}</b><span>${fmtWhen(s.at)} · ${esc(scanSummary(s))}</span></div></button><button class="pill danger" data-hdel="${s.id}" aria-label="Delete ${esc(s.title)}">Delete</button></div>`).join('')
@@ -271,11 +292,11 @@ async function renderHistory() {
   $$('[data-hdel]').forEach(b => b.onclick = async () => { const s = all.find(x => x.id === b.dataset.hdel); await DB.del('scans', s.id); renderHistory(); if (S.view === 'receipts') renderReceipts(); toast('Deleted “' + s.title + '”', async () => { await DB.put('scans', s); renderHistory(); renderReceipts(); }); });
 }
 function openDetail(s) {
-  $('#detailTitle').textContent = s.title; $('#detailImg').src = s.image || s.thumb || ''; $('#detailImg').hidden = !(s.image || s.thumb) || s.kind === 'glass' || s.kind === 'measure' || s.kind === 'voice';
+  $('#detailTitle').textContent = s.title; $('#detailImg').src = s.image || s.thumb || ''; $('#detailImg').hidden = !(s.image || s.thumb) || ['glass', 'measure', 'voice', 'defect', 'count', 'color', 'compare'].includes(s.kind);
   openSheet('#sheetDetail'); renderScan($('#detailBody'), s);
 }
 async function exportJSON() {
-  const scans = (await DB.all('scans')).map(({ image, image2, pages, audio, ...rest }) => (rest.result && rest.result.frames ? { ...rest, result: { ...rest.result, frames: undefined } } : rest)); // photos stay on device; thumbnails included
+  const scans = (await DB.all('scans')).map(({ image, image2, pages, audio, marked, ...rest }) => (rest.result && rest.result.frames ? { ...rest, result: { ...rest.result, frames: undefined } } : rest)); // photos stay on device; thumbnails included
   const data = { app: 'Scan Lab', version: APP_VERSION, exportedAt: new Date().toISOString(), note: 'Exports never include your API key or full-size photos.', scans, foodLog: await DB.all('log') };
   const txt = JSON.stringify(data, null, 2);
   if (/xai-|sk-/.test(aiCfg().key) && aiCfg().key && txt.includes(aiCfg().key)) throw new Error('refusing to export key');

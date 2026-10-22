@@ -36,6 +36,7 @@ async function photo(page, file, input = '#fileLib') { await page.setInputFiles(
 async function mode(page, m) { await page.click(`[data-mode=${m}]`); }
 async function dl(page, sel) { const [d] = await Promise.all([page.waitForEvent('download', { timeout: 20000 }), page.click(sel)]); const p = path.join(TMP, Date.now() + '-' + d.suggestedFilename()); await d.saveAs(p); return { name: d.suggestedFilename(), path: p, buf: fs.readFileSync(p) }; }
 const text = page => page.evaluate(() => document.body.innerText);
+async function skipTap(page) { await page.waitForSelector('#gTapSkip, #gPrev svg [data-piece]', { timeout: 20000 }); const b = await page.$('#gTapSkip'); if (b) await b.click(); }
 
 const T = {};
 /* ---------- shell ---------- */
@@ -46,8 +47,8 @@ T['loads with no errors, manifest, dark theme'] = async ({ page, errors }) => {
   assert(!errors.length, errors.join('; '));
 };
 T['service worker caches shell and works offline'] = { sw: true, fn: async ({ page, ctx }) => {
-  await page.evaluate(() => navigator.serviceWorker.ready); await page.waitForFunction(async () => (await caches.keys()).includes('scan-lab-v2'), null, { timeout: 15000 });
-  const n = await page.evaluate(async () => (await (await caches.open('scan-lab-v2')).keys()).length); assert(n >= 20, 'cached ' + n);
+  await page.evaluate(() => navigator.serviceWorker.ready); await page.waitForFunction(async () => (await caches.keys()).includes('scan-lab-v3'), null, { timeout: 15000 });
+  const n = await page.evaluate(async () => (await (await caches.open('scan-lab-v3')).keys()).length); assert(n >= 20, 'cached ' + n);
   await ctx.setOffline(true); await page.reload(); await page.waitForSelector('.modes button'); assert((await page.title()) === 'Scan Lab', 'offline reload'); await ctx.setOffline(false);
 } };
 /* ---------- camera ---------- */
@@ -154,9 +155,70 @@ T['glass: SVG and PDF export at real scale, tiled with marks'] = async ({ page }
   // single page when it fits
   await flower(page, { colors: 5, simplicity: 5, widthIn: 6 }); const m = await page.evaluate(() => glassPDF(window.__P).meta); assert(m.pages === 2, 'fits on one tile + overview');
 };
+T['glass v3: lead lines follow the photo — keeps more subject outline than v2, still buildable'] = { only: d => d.name !== 'webkit-ipadpro11', fn: async ({ page }) => {
+  await page.addScriptTag({ path: path.join(__dirname, 'glass-metric.js') }); const legacy = fs.readFileSync(fx('glass-v2-legacy.js'), 'utf8'), rows = [];
+  for (const n of ['bird', 'tulip', 'cat', 'house']) {
+    const r = await page.evaluate(async ([src, legacy]) => { const o = { ...glassDefaults(), zoom: false }, im = await glassImageData(src, o), L = new Function(legacy + '\nreturn { glassBuild, glassDefaults };')();
+      const Pn = glassBuild(im, o), Po = L.glassBuild({ width: im.width, height: im.height, data: im.data, aspect: im.aspect }, { ...L.glassDefaults(), widthIn: o.widthIn });
+      return { n: Pn.pieces.length, o: Po.pieces.length, kn: window.__outlineKept(Pn, im), ko: window.__outlineKept(Po, im), v: Pn.version, src: Pn.pieces.filter(p => !p.frame).every(p => Array.isArray(p.src) && p.src.length === 3), statK: Pn.stats.outlineKept }; }, ['data:image/jpeg;base64,' + fs.readFileSync(fx('photos/' + n + '.jpg')).toString('base64'), legacy]);
+    rows.push(n + ' ' + r.ko + '→' + r.kn + '% (' + r.o + '→' + r.n + ' pc)'); assert(r.v === 2 && r.src && r.statK >= 0, n + ' v2 pattern with photo colors');
+    assert(r.kn >= r.ko + 4, n + ' outline kept ' + r.ko + '→' + r.kn); assert(r.n <= 45, n + ' piece count stays buildable ' + r.o + '→' + r.n);
+  }
+  console.log('      outline kept (v2→v3): ' + rows.join(', '));
+} };
+T['glass v3: original kept, Original/Pattern/Overlay/Side views, subject box, silhouette, colors from Color match'] = async ({ page, dev }) => {
+  await page.evaluate(() => localStorage.setItem('glassColors', JSON.stringify([{ name: 'Your color 1 (#C0392B)', hex: '#C0392B' }])));
+  await mode(page, 'glass'); await photo(page, 'photos/tulip.jpg'); await page.click('#btnAnalyze'); await skipTap(page); await page.waitForSelector('#gPrev svg [data-piece]', { timeout: 30000 });
+  const P = await page.evaluate(() => { const P = window.__glass(); return { sil: (P.silhouette || []).length, subj: P.subject, kept: P.stats.outlineKept, user: P.legend.some(l => /Your color 1/.test(l.glass)), crop: P.crop }; });
+  assert(P.sil > 0 && P.subject !== null, 'silhouette chains ' + P.sil); assert(P.kept > 0, 'outline kept'); assert(P.user, 'user color used in legend'); assert(P.crop && P.crop.length === 4, 'crop kept');
+  assert(await page.$eval('#gPrev svg', s => s.querySelector('#silhouette') && !s.querySelector('image')), 'pattern view: silhouette, no photo');
+  assert((await page.textContent('#gStats')).includes('Outline kept'), 'stat shown');
+  await page.click('[data-pv=original]'); assert(await page.$eval('#gPrev svg', s => !!s.querySelector('image') && !s.querySelector('#lead')), 'original view shows photo');
+  await page.click('[data-pv=overlay]'); assert(await page.isVisible('#gOp'), 'opacity slider'); await page.$eval('#gOp', e => { e.value = 80; e.dispatchEvent(new Event('input')); });
+  assert(await page.$eval('#gPrev svg', s => !!s.querySelector('image') && !!s.querySelector('#lead') && /0\.8/.test(s.innerHTML)), 'overlay = photo + lines at 80%');
+  await page.click('[data-pv=side]'); assert((await page.$$('#gPrev .side2 svg')).length === 2, 'side by side');
+  await shotEl(page.locator('#result'), dev, 'v3-glass-views');
+  await page.click('[data-fill=glass]'); await page.click('[data-pv=pattern]');
+  await page.click('#gPick'); await page.waitForSelector('.pick-wrap'); await page.evaluate(() => { const w = document.querySelector('.pick-wrap'), r = w.getBoundingClientRect(), ev = (t, x, y) => w.dispatchEvent(new PointerEvent(t, { bubbles: true, pointerId: 1, pointerType: 'touch', clientX: r.left + r.width * x, clientY: r.top + r.height * y })); ev('pointerdown', 0.2, 0.1); ev('pointermove', 0.5, 0.5); ev('pointermove', 0.8, 0.7); ev('pointerup', 0.8, 0.7); });
+  await page.click('#gPickOK'); await page.waitForFunction(() => window.__glass().settings.subjectBox, null, { timeout: 20000 });
+  const sb = await page.evaluate(() => window.__glass().settings.subjectBox); near(sb[0], 0.2, 0.02, 'box x0'); near(sb[3], 0.7, 0.02, 'box y1'); assert((await page.textContent('#gSubj')).includes('your selection'), 'subject label');
+  await page.$eval('#gDet', e => { e.value = 10; e.dispatchEvent(new Event('input')); }); await page.waitForFunction(() => window.__glass().settings.detail === 10, null, { timeout: 20000 });
+  await page.click('#gSave'); await page.waitForTimeout(300); const s = await page.evaluate(async () => (await DB.all('scans')).find(x => x.kind === 'glass')); assert(s.image && s.image.startsWith('data:image/jpeg') && s.result.version === 2, 'original photo saved with pattern');
+  await page.click('#gUCx'); await page.waitForFunction(() => !localStorage.getItem('glassColors'));
+};
+T['glass v3: tap your subject first (bird on a busy fence) → zoomed, recognizable; geometric style for buildings; small features as advanced pieces / paint'] = async ({ page, dev }) => {
+  await mode(page, 'glass'); await photo(page, 'photos/bird.jpg'); await page.click('#btnAnalyze'); await page.waitForSelector('#gTapWrap'); await page.waitForFunction(() => document.querySelector('#gTapWrap').getBoundingClientRect().height > 100);
+  await shotEl(page.locator('#result'), dev, 'v3-glass-tap-first');
+  await page.waitForTimeout(300); const r = await page.$eval('#gTapWrap', e => { e.scrollIntoView({ block: 'center' }); const b = e.getBoundingClientRect(); return [b.left, b.top, b.width, b.height]; }); await page.mouse.click(r[0] + r[2] * 0.515, r[1] + r[3] * 0.43);
+  await page.waitForFunction(() => window.__glass() && window.__glass().settings.subjectBox, null, { timeout: 30000 }); await page.waitForSelector('#gPrev svg [data-piece]');
+  const P = await page.evaluate(() => { const P = window.__glass(); return { box: P.settings.subjectBox, crop: P.crop, how: P.subject.how, frac: P.subject.frac, kept: P.stats.outlineKept, dots: P.stats.dots }; });
+  assert(P.box[0] > 0.4 && P.box[2] < 0.65 && P.box[1] > 0.2 && P.box[3] < 0.65, 'tap → box around the robin ' + P.box); assert(P.crop[2] < 0.5, 'zoomed to subject ' + P.crop); assert(P.how !== 'none' && P.frac > 0.08, 'subject found ' + P.how + ' ' + P.frac);
+  assert((await page.textContent('#gSubj')).includes('your tap'), 'label');
+  await page.click('[data-pv=side]'); await page.waitForTimeout(200); await shotEl(page.locator('#gPrev'), dev, 'v3-glass-bird-tap-side');
+  // building → straight lines + rectangles automatically
+  await page.click('[data-view=scan]'); await page.evaluate(() => { S.photos = []; }); await photo(page, 'photos/house.jpg'); await page.click('#btnAnalyze'); await skipTap(page); await page.waitForSelector('#gPrev svg [data-piece]', { timeout: 30000 });
+  const H = await page.evaluate(() => { const P = window.__glass(); const segs = P.pieces.filter(p => !p.frame).flatMap(p => p.segs.flat()); return { style: P.style, curves: segs.filter(s => s[0] === 'Q').length, adv: P.stats.advanced }; });
+  assert(H.style === 'geometric' && H.curves === 0, 'house in straight-line style ' + JSON.stringify(H)); assert(H.adv >= 2, 'windows/doors kept as feature pieces ' + H.adv);
+  // cat: eyes kept as advanced pieces, pupils/nose painted; "Off" removes them
+  await page.click('[data-view=scan]'); await page.evaluate(() => { S.photos = []; }); await photo(page, 'photos/cat.jpg'); await page.click('#btnAnalyze'); await skipTap(page); await page.waitForSelector('#gPrev svg [data-piece]', { timeout: 30000 });
+  const C = await page.evaluate(() => { const P = window.__glass(); const blue = P.pieces.filter(p => p.flags.includes('advanced') && p.src[2] > p.src[0] + 20).length; return { blue, adv: P.stats.advanced, style: P.style, det: P.stats.detailLines }; });
+  assert(C.style === 'organic' && C.blue >= 2, 'both blue eyes kept ' + JSON.stringify(C)); assert(await page.$('#gPrev #detail'), 'painted detail layer');
+  assert((await page.textContent('#gStats')).includes('advanced feature piece'), 'advanced explained');
+  await page.selectOption('#gSmall', 'off'); await page.waitForFunction(() => window.__glass().settings.smallFeat === 'off' && !document.querySelector('#gPrev').classList.contains('busy'), null, { timeout: 30000 });
+  const off = await page.evaluate(() => ({ adv: window.__glass().stats.advanced, det: (window.__glass().detail || []).length })); assert(off.adv === 0 && off.det === 0, 'off = simplest ' + JSON.stringify(off));
+};
+T['glass v3: Grok finds subject + recognizability check (blind, then compare)'] = { key: true, fn: async ({ page, mock, dev }) => {
+  await mode(page, 'glass'); await photo(page, 'photos/tulip.jpg'); await page.click('#btnAnalyze'); await skipTap(page); await page.waitForSelector('#gPrev svg [data-piece]', { timeout: 30000 });
+  await page.click('#gFind'); await page.waitForFunction(() => window.__glass().settings.subjectName === 'robin', null, { timeout: 20000 });
+  assert((await page.textContent('#gSubj')).includes('orange breast'), 'features listed'); assert(mock.log.some(l => JSON.stringify(l.body).includes('GLASS SUBJECT.')), 'subject prompt');
+  await page.click('#gRecog'); await page.waitForSelector('#gRecogCard >> text=Matches the photo', { timeout: 20000 });
+  const blind = mock.log.find(l => JSON.stringify(l.body).includes('RECOGNIZABILITY BLIND.')), cmp = mock.log.find(l => JSON.stringify(l.body).includes('RECOGNIZABILITY COMPARE.'));
+  assert(blind && (JSON.stringify(blind.body).match(/data:image/g) || []).length === 1, 'blind check sends only the pattern'); assert(cmp && (JSON.stringify(cmp.body).match(/data:image/g) || []).length === 2 && JSON.stringify(cmp.body).includes('a red tulip'), 'compare sends photo+pattern+guess');
+  assert((await page.textContent('#gRecogCard')).includes('a red tulip'), 'guess shown'); await shotEl(page.locator('#gRecogCard'), dev, 'v3-glass-recog');
+} };
 /* ---------- stained glass (UI) ---------- */
 T['glass UI: live preview, legend, difficulty, exports, save'] = async ({ page, dev }) => {
-  await mode(page, 'glass'); await photo(page, 'flower.jpg'); await page.click('#btnAnalyze'); await page.waitForSelector('#gPrev svg [data-piece]', { timeout: 20000 });
+  await mode(page, 'glass'); await photo(page, 'flower.jpg'); await page.click('#btnAnalyze'); await skipTap(page); await page.waitForSelector('#gPrev svg [data-piece]', { timeout: 20000 });
   const n1 = await page.$$eval('#gPrev [data-piece]', x => x.length); assert(n1 > 4, 'pieces ' + n1);
   assert(await page.$$eval('#gLegend .sw', x => x.length) >= 3, 'legend swatches'); assert(/Beginner|Intermediate/.test(await page.textContent('#gDiffBadge')), 'difficulty');
   await shotEl(page.locator('#result'), dev, '08-glass-pattern');
@@ -168,7 +230,7 @@ T['glass UI: live preview, legend, difficulty, exports, save'] = async ({ page, 
   await page.click('#gSave'); await page.click('[data-view=history]'); await page.waitForSelector('.hist-item >> text=Stained glass');
 };
 T['glass UI: Grok tips are optional'] = { key: true, fn: async ({ page }) => {
-  await mode(page, 'glass'); await photo(page, 'flower.jpg'); await page.click('#btnAnalyze'); await page.waitForSelector('#gGrok'); await page.click('#gGrok'); await page.waitForSelector('#gTips >> text=Merge the small dark specks');
+  await mode(page, 'glass'); await photo(page, 'flower.jpg'); await page.click('#btnAnalyze'); await skipTap(page); await page.waitForSelector('#gGrok'); await page.click('#gGrok'); await page.waitForSelector('#gTips >> text=Merge the small dark specks');
 } };
 /* ---------- measure ---------- */
 async function dragNorm(page, sel, from, to) { await page.locator(sel).scrollIntoViewIfNeeded(); const b = await page.locator(sel).boundingBox(); await page.mouse.move(b.x + from[0] * b.width, b.y + from[1] * b.height); await page.mouse.down(); await page.mouse.move(b.x + to[0] * b.width, b.y + to[1] * b.height, { steps: 6 }); await page.mouse.up(); }
@@ -293,6 +355,69 @@ T['voice: records with MediaRecorder, chunks saved every 2s'] = { only: 'chromiu
   await page.click('#vStop'); await page.waitForSelector('#vChart', { timeout: 30000 }); assert(await page.evaluate(async () => (await DB.all('chunks')).length) === 0, 'chunks cleaned');
 } };
 
+/* ---------- v3 modes ---------- */
+const CPTS = JSON.parse(fs.readFileSync(fx('count-points.json'), 'utf8'));
+T['defect: tap-to-circle markup burned in, severe → not safe, report PDF, history'] = { key: true, fn: async ({ page, dev, mock }) => {
+  await mode(page, 'defect'); await photo(page, 'object.jpg'); await photo(page, 'measure.jpg'); assert(await page.evaluate(() => S.photos.length) === 2, '2 photos');
+  await page.click('#btnAnalyze'); await page.waitForSelector('#dCanvas'); const b = await page.$eval('#dCanvas', c => { c.scrollIntoView({ block: 'center' }); const r = c.getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; });
+  await page.mouse.click(b[0] + b[2] * 0.3, b[1] + b[3] * 0.3); assert(await page.evaluate(() => window.__defect.marks[0].length) === 1, 'circle added');
+  await shotEl(page.locator('#result'), dev, 'v3-defect-markup'); await page.click('#dRun'); await page.waitForSelector('.safe-banner', { timeout: 20000 });
+  const req = mock.log.find(l => JSON.stringify(l.body).includes('DEFECT CHECK.')); assert(req && JSON.stringify(req.body).includes('Red circles') && (JSON.stringify(req.body).match(/data:image/g) || []).length === 2, 'markup note + 2 photos');
+  const tx = await page.textContent('#result'); for (const s of ['Do not use', 'forced', 'Hairline crack', 'Over-torqued bolt', 'Replace the bracket', 'Torque to spec', 'not a certified inspection']) assert(tx.includes(s) || (s === 'forced' && tx.includes('because a severe')), 'missing ' + s);
+  assert((await page.$$('.d-ann')).length === 2, 'annotated photos'); await shotEl(page.locator('#result'), dev, 'v3-defect-result');
+  const f = await dl(page, '#dPDF'); assert(f.name.endsWith('.pdf') && f.buf.slice(0, 5).toString() === '%PDF-', 'pdf'); const txt = execSync(`pdftotext ${f.path} -`).toString(); assert(txt.includes('Do not use') && txt.includes('Hairline crack') && txt.includes('certified'), 'pdf text');
+  await page.click('[data-view=history]'); await page.waitForSelector('.hist-item >> text=Defect check'); assert((await page.textContent('#histList')).includes('Do not use · 2 defects'), 'summary');
+} };
+T['defect: validation never says safe when a severe defect is reported'] = async ({ page }) => {
+  const r = await page.evaluate(() => [validateDefect({ defects: [{ type: 'burn', severity: 'critical' }], safe_to_use: 'yes' }).safe, validateDefect({ defects: [{ type: 'wear', severity: 'moderate' }], safe_to_use: 'yes' }).safe, validateDefect({ defects: [], safe_to_use: 'yes' }).safe, validateDefect({ defects: [{ box: [100, 200, 500, 600] }] }).defects[0].box.join()]);
+  assert(r[0] === 'no' && r[1] === 'caution' && r[2] === 'yes' && r[3] === '0.1,0.2,0.5,0.6', JSON.stringify(r));
+};
+T['count: on-device finds 12, tap to remove/add, undo, save, CSV'] = async ({ page, dev }) => {
+  await mode(page, 'count'); await photo(page, 'count.jpg'); await page.click('#btnAnalyze'); await page.waitForFunction(() => window.__count && document.querySelector('#cN').textContent === '12', null, { timeout: 20000 });
+  assert((await page.textContent('#cBadge')) === 'on-device', 'no key → on-device'); await shotEl(page.locator('#result'), dev, 'v3-count-local');
+  const b = await page.$eval('#cCanvas', c => { c.scrollIntoView({ block: 'center' }); const r = c.getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; });
+  await page.mouse.click(b[0] + b[2] * CPTS[0][0], b[1] + b[3] * CPTS[0][1]); await page.waitForFunction(() => document.querySelector('#cN').textContent === '11');
+  await page.mouse.click(b[0] + b[2] * 0.5, b[1] + b[3] * 0.97); await page.waitForFunction(() => document.querySelector('#cN').textContent === '12');
+  await page.click('#cUndo'); await page.waitForFunction(() => document.querySelector('#cN').textContent === '11');
+  await page.fill('#cItem', 'hex nuts'); await page.click('#cSave'); const f = await dl(page, '#cCSV'); const csv = f.buf.toString(); assert(csv.includes('hex nuts,11,On-device') && csv.startsWith('Date,Time,Item,Count'), csv);
+};
+T['count: Grok points + numbered markers, correct the miss'] = { key: true, fn: async ({ page, dev, mock }) => {
+  await mode(page, 'count'); await photo(page, 'count.jpg'); await page.click('#btnAnalyze'); await page.waitForFunction(() => document.querySelector('#cN') && document.querySelector('#cN').textContent === '11', null, { timeout: 20000 });
+  assert(mock.log.some(l => JSON.stringify(l.body).includes('COUNT ITEMS.')), 'prompt'); assert((await page.inputValue('#cItem')) === 'hex nuts', 'item from Grok');
+  const b = await page.$eval('#cCanvas', c => { c.scrollIntoView({ block: 'center' }); const r = c.getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; }); await page.mouse.click(b[0] + b[2] * CPTS[11][0], b[1] + b[3] * CPTS[11][1]);
+  await page.waitForFunction(() => document.querySelector('#cN').textContent === '12'); assert((await page.textContent('#cNote')).includes('1 manual correction'), 'correction noted');
+  await shotEl(page.locator('#result'), dev, 'v3-count-grok'); await page.click('#cSave'); await page.click('[data-view=history]'); await page.waitForSelector('.hist-item >> text=Count · 12 hex nuts');
+} };
+T['color: sample, white balance removes the cast, names/paint/glass matches, send to Glass, CSV'] = async ({ page, dev }) => {
+  await mode(page, 'color'); await photo(page, 'color.png'); await page.click('#btnAnalyze'); await page.waitForSelector('#colCanvas');
+  const b = await page.$eval('#colCanvas', c => { c.scrollIntoView({ block: 'center' }); const r = c.getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; }), tap = (x, y) => page.mouse.click(b[0] + b[2] * x, b[1] + b[3] * y);
+  await tap(220 / 800, 300 / 600); await page.waitForSelector('[data-si="0"]'); const raw = await page.evaluate(() => window.__color.st.samples[0].hex); assert(raw !== '#4682B4', 'cast visible before WB ' + raw);
+  await page.click('[data-ct=white]'); await tap(600 / 800, 180 / 600); await page.waitForFunction(() => window.__color.st.white);
+  const s = await page.evaluate(() => { const x = window.__color.st.samples[0]; return { hex: x.hex, css: x.css[0].e[0], d: dE2000(rgb2lab(hex2rgb(x.hex)), rgb2lab([70, 130, 180])), sw: x.sw[0].e[0], ral: x.ral[0].e[0] }; });
+  assert(s.d < 3, 'white balance recovers steelblue ' + JSON.stringify(s)); assert(s.css === 'steelblue', 'nearest name ' + s.css); assert(/^SW ?\d{4}$/.test(s.sw) && /^RAL \d{4}$/.test(s.ral), 'paint codes ' + s.sw + ' ' + s.ral);
+  await tap(600 / 800, 440 / 600); await page.waitForSelector('[data-si="1"]'); assert(await page.evaluate(() => window.__color.st.samples[1].css[0].e[0]) === 'gold', 'gold');
+  assert((await page.textContent('#result')).includes('approximate'), 'approximate label'); await shotEl(page.locator('#result'), dev, 'v3-color');
+  await page.click('#colGlass'); const gc = await page.evaluate(() => JSON.parse(localStorage.getItem('glassColors'))); assert(gc.length === 2 && /Your color 1/.test(gc[0].name), 'sent to glass');
+  const f = await dl(page, '#colCSV'); assert(f.buf.toString().split('\n')[1].includes('steelblue'), 'csv'); await page.click('#colSave'); await page.click('[data-view=history]'); await page.waitForSelector('.hist-item >> text=Colors');
+};
+T['compare: two photos → aligned, the added sign highlighted, slider/overlay/differences, Grok description, saved'] = { key: true, fn: async ({ page, dev, mock }) => {
+  await mode(page, 'compare'); await photo(page, 'cmp-before.jpg'); assert(await page.isDisabled('#btnAnalyze'), 'needs 2'); await photo(page, 'cmp-after.jpg'); await page.click('#btnAnalyze');
+  await page.waitForFunction(() => window.__compare && window.__compare.st.diff, null, { timeout: 30000 });
+  const r = await page.evaluate(() => window.__compare.st); near(r.align.s, 1 / 1.06, 0.03, 'scale'); near(Math.abs(r.align.r * 180 / Math.PI), 3, 1.2, 'rotation'); assert(r.align.score > 0.4, 'match ' + r.align.score);
+  const hit = r.diff.regions.find(g => g.box[0] < 0.7 && g.box[2] > 0.7 && g.box[1] < 0.26 && g.box[3] > 0.26); assert(hit && r.diff.regions.length <= 3, 'sign region ' + JSON.stringify(r.diff.regions.map(g => g.box)));
+  await shotEl(page.locator('#result'), dev, 'v3-compare-side');
+  for (const v of ['wipe', 'overlay', 'diff']) { await page.click(`[data-cv=${v}]`); await page.waitForTimeout(100); } await shotEl(page.locator('#result .card').first(), dev, 'v3-compare-diff');
+  await page.click('[data-cv=wipe]'); await page.$eval('#cmpSl', e => { e.value = 30; e.dispatchEvent(new Event('input')); });
+  await page.click('#cmpAsk'); await page.waitForSelector('#cmpGrok >> text=New red sign'); const q = mock.log.find(l => JSON.stringify(l.body).includes('COMPARE SCANS.')); assert(q && (JSON.stringify(q.body).match(/data:image/g) || []).length === 2 && JSON.stringify(q.body).includes('before/after'), 'prompt');
+  await page.click('#cmpSave'); await page.click('[data-view=history]'); await page.waitForSelector('.hist-item >> text=Compare'); assert((await page.textContent('#histList')).includes('% changed'), 'summary');
+} };
+T['compare: two saved Measure scans compare by dimensions'] = async ({ page, dev }) => {
+  await page.evaluate(async () => { const img = await toJPEG(await (await fetch('tests/fixtures/cmp-before.jpg')).blob(), 400); const mk = (id, L, W, H, at) => ({ id, at, mode: 'measure', kind: 'measure', title: '3D · part ' + id, image: img, thumb: img, result: { kind: 'measure', sub: '3d', shape: 'box', dims: { L, W, H } } });
+    await DB.put('scans', mk('A', 100, 50, 25, 1)); await DB.put('scans', mk('B', 102, 50, 24, 2)); });
+  await mode(page, 'compare'); await page.waitForSelector('#btnCmpHist'); await page.click('#btnCmpHist'); await page.click('[data-pk=A]'); await page.click('[data-pk=B]'); await page.click('#cmpGo');
+  await page.waitForSelector('#cmpDims:not([hidden]) table'); const t = await page.textContent('#cmpDims'); assert(t.includes('+0.08 in') && t.includes('+2.0%') && t.includes('−0.04 in') && t.includes('-4.0%'), t);
+  await shotEl(page.locator('#result'), dev, 'v3-compare-dims');
+};
 /* ---------- iPhone portrait layout ---------- */
 const phoneOnly = 'iphone';
 async function layoutCheck(page, where) {
@@ -325,7 +450,7 @@ T['iPhone: every mode fits portrait, no overflow, 44pt, safe areas, one-handed s
 } };
 T['iPhone: stained-glass preview + 3D viewer usable at phone size, exports via iOS share sheet'] = { only: phoneOnly, key: true, fn: async ({ page, dev }) => {
   await page.evaluate(() => { window.__noShare = false; window.__shared = []; navigator.canShare = d => !!(d && d.files); navigator.share = async d => { window.__shared.push(...d.files.map(f => ({ name: f.name, type: f.type, size: f.size }))); }; });
-  await mode(page, 'glass'); await photo(page, 'flower.jpg'); await page.click('#btnAnalyze'); await page.waitForSelector('#gPrev svg [data-piece]', { timeout: 20000 });
+  await mode(page, 'glass'); await photo(page, 'flower.jpg'); await page.click('#btnAnalyze'); await skipTap(page); await page.waitForSelector('#gPrev svg [data-piece]', { timeout: 20000 });
   await layoutCheck(page, 'glass result');
   const pv = await page.$eval('#gPrev', e => { const r = e.getBoundingClientRect(); return [r.width, innerWidth]; }); assert(pv[0] >= pv[1] * 0.8 && pv[0] <= pv[1], 'glass preview near full width ' + pv);
   await page.locator('#gPrev').scrollIntoViewIfNeeded(); await page.locator('#gPrev [data-piece]').first().tap().catch(() => {});
@@ -348,7 +473,7 @@ T['iPhone: stained-glass preview + 3D viewer usable at phone size, exports via i
     if (onlyDev && !onlyDev.test(dev.name)) continue;
     const browser = await dev.type.launch(dev.launch || {});
     for (const [name, def] of Object.entries(T)) {
-      if (only && !only.test(name)) continue; const d = typeof def === 'function' ? { fn: def } : def; if (d.only && !dev.name.includes(d.only)) continue;
+      if (only && !only.test(name)) continue; const d = typeof def === 'function' ? { fn: def } : def; if (d.only && !(typeof d.only === 'function' ? d.only(dev) : dev.name.includes(d.only))) continue;
       let env; const st = Date.now();
       try { env = await newPage(browser, dev, d); await d.fn({ ...env, dev, browser }); if (env.errors.length) throw new Error('page errors: ' + env.errors.join(' | ')); results.push({ dev: dev.name, name, ok: true, ms: Date.now() - st }); process.stdout.write(`✓ ${dev.name} · ${name} (${Date.now() - st} ms)\n`); }
       catch (e) { results.push({ dev: dev.name, name, ok: false, err: e.message }); process.stdout.write(`✗ ${dev.name} · ${name}\n   ${e.message.split('\n').slice(0, 4).join('\n   ')}\n`); try { env && await env.page.screenshot({ path: `/tmp/fail-${dev.name}-${name.replace(/\W+/g, '_').slice(0, 40)}.png` }); } catch (_) {} }

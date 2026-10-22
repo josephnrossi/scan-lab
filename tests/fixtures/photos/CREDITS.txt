@@ -1,0 +1,6 @@
+Sample photos from Wikimedia Commons, all released under CC0 1.0 (public domain dedication):
+bird.jpg  — File:Erithacus rubecula 121355811.jpg
+tulip.jpg — File:Prince of Peace Catholic School tulip.jpg
+cat.jpg   — File:Tabby cat with blue eyes-3336579.jpg
+house.jpg — File:Typical colonial house from downtown Maracaibo.jpg
+Downscaled to 720 px for tests.

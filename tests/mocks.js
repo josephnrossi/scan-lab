@@ -22,6 +22,16 @@ const STT = { text: '', words: [
   ...'Uh I think it was 30 units basically and the truck left late'.split(' ').map((w, i) => ({ text: w, start: 3.8 + i * 0.33, end: 4.0 + i * 0.33, speaker: 1 })),
   ...'The Port of Long Beach is the second busiest port.'.split(' ').map((w, i) => ({ text: w, start: 8.6 + i * 0.25, end: 8.8 + i * 0.25, speaker: 0 }))] };
 const FACT = { checks: [{ i: 0, status: 'supported', explanation: 'Port statistics list Long Beach second after Los Angeles. The claim is truthful.', sources: [{ title: 'Port of Long Beach — Facts', url: 'https://polb.com/port-info/port-facts-faqs/' }] }] };
+const GLASS_SUBJECT = { subject: 'robin', box: [0.44, 0.32, 0.59, 0.66], features: [{ name: 'orange breast', box: [0.47, 0.4, 0.56, 0.52] }, { name: 'head', box: [0.47, 0.32, 0.55, 0.4] }] };
+const RECOG_BLIND = { depicts: 'a red tulip', confidence: 'high', cues: ['cup-shaped red bloom', 'green stem'] };
+const RECOG_CMP = { photo_subject: 'a red tulip', match: 'yes', explanation: 'The bloom shape, petals and stem read clearly.', add_detail: ['Keep the petal split as its own lead line'] };
+const CPTS = require('./fixtures/count-points.json');
+const COUNT = { kind: 'count', item: 'hex nuts', count: 11, points: CPTS.slice(0, 11), confidence: 'high', notes: 'One nut near the edge may be cut off.' };
+const DEFECT = { kind: 'defect', object: 'Cast iron bracket', material: 'gray cast iron', defects: [
+  { type: 'crack', name: 'Hairline crack at the mounting hole', location: 'upper left hole', photo: 1, box: [0.2, 0.2, 0.45, 0.45], severity: 'severe', confidence: 'medium', likely_causes: ['Over-torqued bolt', 'Fatigue from vibration'], corrective_actions: ['Replace the bracket', 'Do not weld cast iron without preheat'], prevention: ['Torque to spec', 'Add a washer'] },
+  { type: 'corrosion', name: 'Surface rust', location: 'lower edge', photo: 1, box: [0.5, 0.6, 0.9, 0.9], severity: 'minor', confidence: 'high', likely_causes: ['Moisture'], corrective_actions: ['Wire-brush and prime'], prevention: ['Paint or oil'] }],
+  overall_severity: 'moderate', safe_to_use: 'caution', safety_reason: 'Crack near a load path.', next_steps: ['Dye-penetrant test'], limits: 'Photos cannot show internal cracks.' };
+const COMPARE = { kind: 'compare', summary: 'A red sign was added on the upper right wall.', same_object: 'yes', change: 'different', differences: [{ what: 'New red sign', where: 'upper right', significance: 'notable' }, { what: 'Slightly brighter exposure', where: 'whole photo', significance: 'minor' }], confidence: 'high' };
 const chat = (obj) => ({ id: 'x', choices: [{ message: { role: 'assistant', content: typeof obj === 'string' ? obj : JSON.stringify(obj) } }] });
 
 async function installMocks(page, opts = {}) {
@@ -40,6 +50,12 @@ async function installMocks(page, opts = {}) {
     else if (/Decide whether the photo/.test(all)) r = state.auto === 'materials' ? MATS : FOOD;
     else if (/receipts, business cards/.test(all)) r = state.doc === 'card' ? CARD : RECEIPT;
     else if (/measure objects in photos/.test(all)) r = /Photos are views/.test(all) ? MEASURE_3D : MEASURE_FLAT;
+    else if (/COUNT ITEMS\./.test(all)) r = COUNT;
+    else if (/DEFECT CHECK\./.test(all)) r = DEFECT;
+    else if (/COMPARE SCANS\./.test(all)) r = COMPARE;
+    else if (/GLASS SUBJECT\./.test(all)) r = GLASS_SUBJECT;
+    else if (/RECOGNIZABILITY BLIND\./.test(all)) r = RECOG_BLIND;
+    else if (/RECOGNIZABILITY COMPARE\./.test(all)) r = RECOG_CMP;
     else if (/stained-glass teacher/.test(all)) r = GLASS_TIPS;
     else if (/analyze conversation transcripts/.test(all)) r = VOICE;
     else r = { error: 'unmocked' };
