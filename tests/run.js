@@ -47,8 +47,8 @@ T['loads with no errors, manifest, dark theme'] = async ({ page, errors }) => {
   assert(!errors.length, errors.join('; '));
 };
 T['service worker caches shell and works offline'] = { sw: true, fn: async ({ page, ctx }) => {
-  await page.evaluate(() => navigator.serviceWorker.ready); await page.waitForFunction(async () => (await caches.keys()).includes('scan-lab-v3'), null, { timeout: 15000 });
-  const n = await page.evaluate(async () => (await (await caches.open('scan-lab-v3')).keys()).length); assert(n >= 20, 'cached ' + n);
+  await page.evaluate(() => navigator.serviceWorker.ready); await page.waitForFunction(async () => (await caches.keys()).includes('scan-lab-v4'), null, { timeout: 15000 });
+  const n = await page.evaluate(async () => (await (await caches.open('scan-lab-v4')).keys()).length); assert(n >= 20, 'cached ' + n);
   await ctx.setOffline(true); await page.reload(); await page.waitForSelector('.modes button'); assert((await page.title()) === 'Scan Lab', 'offline reload'); await ctx.setOffline(false);
 } };
 /* ---------- camera ---------- */
@@ -186,6 +186,48 @@ T['glass v3: original kept, Original/Pattern/Overlay/Side views, subject box, si
   await page.click('#gSave'); await page.waitForTimeout(300); const s = await page.evaluate(async () => (await DB.all('scans')).find(x => x.kind === 'glass')); assert(s.image && s.image.startsWith('data:image/jpeg') && s.result.version === 2, 'original photo saved with pattern');
   await page.click('#gUCx'); await page.waitForFunction(() => !localStorage.getItem('glassColors'));
 };
+T['glass v4: cat face blind check — 2 distinct pointed ears with inner ears, eyes+pupils, nose, split muzzle, chin, 2–4 stripes, closed silhouette, calm contrasting background'] = async ({ page }) => {
+  const src = 'data:image/jpeg;base64,' + fs.readFileSync(fx('photos/cat.jpg')).toString('base64');
+  for (const q of [0, 0.82]) { // the photo as given and as the app re-encodes it
+    const r = await catPlan(page, q, src);
+    const tag = 'cat q' + q + ': ', parts = r.parts, cnt = n => parts.filter(p => p.part === n).length, one = n => parts.find(p => p.part === n);
+    assert(r.how === 'face', tag + 'face layout used ' + r.how);
+    for (const n of ['earL', 'earR', 'innerL', 'innerR', 'eyeL', 'eyeR', 'nose', 'muzzleL', 'muzzleR', 'chin']) assert(cnt(n) === 1, tag + 'exactly one ' + n + ' piece, got ' + cnt(n));
+    const ears = [['earL', 'innerL'], ['earR', 'innerR']].map(([e, i]) => { const a = one(e), b = one(i), x0 = Math.min(a.x0, b.x0), x1 = Math.max(a.x1, b.x1), y0 = Math.min(a.y0, b.y0), y1 = Math.max(a.y1, b.y1);
+      return { part: e, rim: a, inner: b, ids: [a.id, b.id], x0, x1, y0, y1, cx: (x0 + x1) / 2, fill: (a.pa + b.pa) / ((x1 - x0) * (y1 - y0)) }; }), head = parts.filter(p => p.subj && !/^(ear|inner)/.test(p.part));
+    assert(!ears[0].ids.some(id => parts.find(p => p.id === id).touch.some(t => ears[1].ids.includes(t))), tag + 'the 2 ears are distinct, separate pieces');
+    assert(ears[0].cx < r.midX && ears[1].cx > r.midX && ears[1].cx - ears[0].cx > r.ppi, tag + 'one ear each side ' + ears.map(e => e.cx) + ' mid ' + r.midX);
+    const crown = Math.min(...head.map(p => p.y0));
+    for (const e of ears) { assert(e.y0 < crown - 0.3 * r.ppi, tag + e.part + ' tip stands above the crown ' + e.y0 + ' vs ' + crown);
+      assert(e.fill > 0.3 && e.fill < 0.72, tag + e.part + ' is a triangle (fill of its box ' + e.fill + ')');
+      assert(e.rim.y0 <= e.inner.y0 && e.rim.touch.includes(e.inner.id), tag + e.part + ': the rim holds the pointed tip and wraps the inner ear');
+      for (const p of [e.rim, e.inner]) assert(p.areaIn >= r.minAreaIn * 0.5 && p.widthIn >= r.minWidthIn * 0.99, tag + p.part + ' cuttable ' + p.areaIn + 'in² ' + p.widthIn + 'in vs min ' + r.minAreaIn + 'in² ' + r.minWidthIn + 'in');
+      assert(['Pink', 'Flesh / peach', 'Rose'].includes(e.inner.glass) && e.inner.glass !== e.rim.glass, tag + e.part + ' inner ear in its own pink/light glass ' + e.inner.glass + ' / ' + e.rim.glass); }
+    assert(r.dots.filter(d => ['eyeL', 'eyeR'].some(n => { const e = one(n); return d.cx > e.x0 && d.cx < e.x1 && d.cy > e.y0 && d.cy < e.y1; })).length >= 2, tag + 'a pupil in each eye ' + JSON.stringify(r.dots));
+    const lum = p => 0.3 * p.rgb[0] + 0.59 * p.rgb[1] + 0.11 * p.rgb[2], cheeks = parts.filter(p => /^cheek/.test(p.part));
+    assert(['muzzleL', 'muzzleR', 'chin'].every(n => cheeks.every(c => lum(one(n)) > lum(c))), tag + 'muzzle and chin lighter than the cheeks');
+    assert(one('muzzleL').touch.includes(one('muzzleR').id) && Math.abs((one('muzzleL').x1 + one('muzzleR').x0) / 2 - one('nose').cx) < 0.25 * r.ppi, tag + 'muzzle split left/right under the nose');
+    const stripes = parts.filter(p => /^stripe/.test(p.part)), fur = parts.filter(p => /^(forehead|temple)/.test(p.part));
+    assert(stripes.length >= 2 && stripes.length <= 4, tag + '2–4 forehead stripes ' + stripes.length); assert(stripes.every(s => fur.every(f => lum(s) < lum(f))), tag + 'stripes darker than the forehead fur');
+    assert(r.loops.closed && r.loops.box[1] <= Math.min(...ears.map(e => e.y0)) + 1 && r.loops.box[3] >= one('chin').y1 - 1, tag + 'one continuous lead silhouette around the whole head incl. both ears ' + JSON.stringify(r.loops));
+    assert(r.bg >= 2 && r.bg <= 7, tag + 'calm background ' + r.bg); assert(r.clash === 0, tag + 'background glass differs from the head glass it touches');
+    assert(r.n <= 45 && r.sharp === 0, tag + 'buildable ' + r.n + ' pieces, sharp ' + r.sharp);
+  }
+};
+async function catPlan(page, q, src) { return page.evaluate(async ([q, src]) => {
+  const o = glassDefaults(), s2 = q ? await toJPEG(src, 1280, q) : src, im = await glassImageData(s2, o), P = glassBuild(im, o), pcs = P.pieces.filter(p => !p.frame), key = pt => pt[0].toFixed(1) + ',' + pt[1].toFixed(1);
+  const vs = new Map(); for (const p of pcs) for (const r of p.poly) for (const pt of r) { const k = key(pt); (vs.get(k) || vs.set(k, new Set()).get(k)).add(p.id); }
+  const parts = pcs.map(p => { const pts = p.poly.flat(), xs = pts.map(q => q[0]), ys = pts.map(q => q[1]), x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys), ring = p.poly[0];
+    let a = 0; for (let i = 0; i < ring.length; i++) { const u = ring[i], v = ring[(i + 1) % ring.length]; a += u[0] * v[1] - v[0] * u[1]; }
+    const touch = new Set(); for (const r of p.poly) for (const pt of r) for (const id of vs.get(key(pt))) if (id !== p.id) touch.add(id);
+    return { id: p.id, part: p.part, subj: p.subj, glass: p.glass, rgb: p.rgb, areaIn: p.areaIn, widthIn: p.widthIn, x0, x1, y0, y1, cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, pa: Math.abs(a / 2), fill: Math.abs(a / 2) / ((x1 - x0) * (y1 - y0)), touch: [...touch] }; });
+  // silhouette: every open chain end meets another chain end → closed loop(s); report the bounding box of all of it
+  const ends = [], all = []; for (const s of P.silhouette) { const segs = s.filter(g => g[0] !== 'Z'), a = segs[0].slice(-2), b = segs[segs.length - 1].slice(-2); for (const g of segs) for (let i = 1; i < g.length; i += 2) all.push([g[i], g[i + 1]]); if (s[s.length - 1][0] !== 'Z') ends.push(a, b); }
+  const open = ends.filter((e, i) => !ends.some((f, j) => j !== i && Math.hypot(e[0] - f[0], e[1] - f[1]) < 0.6)).length;
+  const xs = all.map(q => q[0]), ys = all.map(q => q[1]), bg = parts.filter(p => !p.subj), clash = parts.filter(p => p.subj && bg.some(b => b.glass === p.glass && b.touch.includes(p.id))).length;
+  const ex = parts.filter(p => /^(ear|inner)/.test(p.part)), midX = (Math.min(...ex.map(p => p.x0)) + Math.max(...ex.map(p => p.x1))) / 2;
+  return { how: P.subject.how, parts, dots: P.dots, loops: { closed: P.silhouette.length > 0 && open === 0, open, box: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)] }, bg: bg.length, clash, n: P.pieces.length, sharp: P.stats.flagged.sharp.length, ppi: P.ppi, midX, minAreaIn: P.stats.minAreaIn, minWidthIn: P.stats.minWidthIn };
+}, [q, src]); }
 T['glass v3: bird on a busy fence found without a tap → zoomed, calm background, beak/eye/perch, distinct glass; tap step for others; buildings geometric; small features'] = async ({ page, dev }) => {
   await mode(page, 'glass'); await photo(page, 'photos/bird.jpg'); await page.click('#btnAnalyze');
   await page.waitForFunction(() => window.__glass && window.__glass() && window.__glass().settings.subjectBox, null, { timeout: 30000 }); await page.waitForSelector('#gPrev svg [data-piece]');

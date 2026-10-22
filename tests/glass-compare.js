@@ -1,6 +1,6 @@
 /* Renders the Stained Glass pattern for each sample photo on iPhone 15 (WebKit) and saves screenshots (bird: auto-detected subject, no tap): node tests/glass-compare.js <prefix> */
 const { webkit, devices } = require('/workspace/tools/node_modules/playwright'); const path = require('path');
-const BASE = process.env.BASE || 'http://localhost:8765/scan-lab/index.html', PRE = process.argv[2] || 'new', SHOTS = '/workspace/scan-lab-shots';
+const BASE = process.env.BASE || 'http://localhost:8765/scan-lab/index.html', PRE = process.argv[2] || 'new', SHOTS = "/workspace/scan-lab-shots", VER = process.env.VER || "v3";
 (async () => {
   const b = await webkit.launch(); const ctx = await b.newContext({ ...devices['iPhone 15'], serviceWorkers: 'block' }); const page = await ctx.newPage();
   await page.addInitScript(() => { localStorage.setItem('scanMode', 'glass'); });
@@ -12,9 +12,9 @@ const BASE = process.env.BASE || 'http://localhost:8765/scan-lab/index.html', PR
     await page.waitForSelector('#gPrev svg [data-piece]', { timeout: 60000 }); await page.waitForTimeout(400);
     const pv = page.locator('#gPrev'); await pv.scrollIntoViewIfNeeded();
     if (await page.$('[data-pv=pattern]')) await page.click('[data-pv=pattern]');
-    await pv.screenshot({ path: path.join(SHOTS, `v3-glass-${PRE}-${n}.png`) });
+    await pv.screenshot({ path: path.join(SHOTS, `${VER}-glass-${PRE}-${n}.png`) });
     if (PRE !== 'old') {
-      for (const v of ['side', 'overlay']) { await page.click(`[data-pv=${v}]`); await page.waitForTimeout(250); await pv.screenshot({ path: path.join(SHOTS, `v3-glass-${PRE}-${n}-${v}.png`) }); }
+      for (const v of ['side', 'overlay']) { await page.click(`[data-pv=${v}]`); await page.waitForTimeout(250); await pv.screenshot({ path: path.join(SHOTS, `${VER}-glass-${PRE}-${n}-${v}.png`) }); }
       await page.click('[data-pv=pattern]');
     }
     const st = await page.textContent('#gStats'); console.log(PRE, n, st.replace(/\s+/g, ' ').slice(0, 120));

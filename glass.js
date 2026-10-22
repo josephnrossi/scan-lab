@@ -160,7 +160,7 @@ const ringArea = pts => { let a = 0; for (let i = 0, n = pts.length; i < n; i++)
 function hull(pts) { const p = pts.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]); if (p.length < 3) return p; const cr = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]); const lo = [], up = []; for (const q of p) { while (lo.length >= 2 && cr(lo[lo.length - 2], lo[lo.length - 1], q) <= 0) lo.pop(); lo.push(q); } for (const q of p.reverse()) { while (up.length >= 2 && cr(up[up.length - 2], up[up.length - 1], q) <= 0) up.pop(); up.push(q); } return lo.slice(0, -1).concat(up.slice(0, -1)); }
 function dp(pts, eps, keep, a, b) { let md = 0, mi = -1; const [x1, y1] = pts[a], [x2, y2] = pts[b], dx = x2 - x1, dy = y2 - y1, L = Math.hypot(dx, dy) || 1; for (let i = a + 1; i < b; i++) { const d = Math.abs(dy * pts[i][0] - dx * pts[i][1] + x2 * y1 - y2 * x1) / L; if (d > md) { md = d; mi = i; } } if (md > eps && mi > 0) { keep[mi] = 1; dp(pts, eps, keep, a, mi); dp(pts, eps, keep, mi, b); } }
 
-function vectorize(R, n, W, H, { smooth = 3, eps = 1, chains = null } = {}) {
+function vectorize(R, n, W, H, { smooth = 3, eps = 1, chains = null, pins = null } = {}) {
   const { rings, VW } = traceRegions(R, n, W, H), lab = (x, y) => (x < 0 || y < 0 || x >= W || y >= H) ? -1 : R[y * W + x];
   const vx = v => v % VW, vy = v => Math.floor(v / VW);
   const isJ = v => { const x = vx(v), y = vy(v); const s = new Set([lab(x - 1, y - 1), lab(x, y - 1), lab(x - 1, y), lab(x, y)]); return s.size >= 3; };
@@ -168,6 +168,7 @@ function vectorize(R, n, W, H, { smooth = 3, eps = 1, chains = null } = {}) {
   const nb = new Map(); const addN = (a, b) => { if (!nb.has(a)) nb.set(a, new Set()); nb.get(a).add(b); };
   rings.forEach(rs => rs.forEach(ring => ring.forEach((v, i) => { const w = ring[(i + 1) % ring.length]; addN(v, w); addN(w, v); })));
   const J = new Set(); for (const v of nb.keys()) { const x = vx(v), y = vy(v); if (isJ(v) || ((x === 0 || x === W) && (y === 0 || y === H))) J.add(v); }
+  if (pins) for (const [px, py] of pins) { let bv = -1, bd = 2.5; for (const v of nb.keys()) { const dd = Math.hypot(vx(v) - px, vy(v) - py); if (dd < bd) { bd = dd; bv = v; } } if (bv >= 0) J.add(bv); } // corners that must stay pointed (ear tips, nose)
   const pos = new Map(); for (const v of nb.keys()) pos.set(v, [vx(v), vy(v)]);
   for (let it = 0; it < smooth; it++) { const np = new Map(); for (const [v, p] of pos) { if (J.has(v)) { np.set(v, p); continue; } const ns = [...nb.get(v)]; if (ns.length !== 2) { np.set(v, p); continue; } const a = pos.get(ns[0]), b = pos.get(ns[1]); let x = 0.5 * p[0] + 0.25 * (a[0] + b[0]), y = 0.5 * p[1] + 0.25 * (a[1] + b[1]); const ox = vx(v), oy = vy(v); if (ox === 0 || ox === W) x = ox; if (oy === 0 || oy === H) y = oy; np.set(v, [x, y]); } for (const [v, p] of np) pos.set(v, p); }
   // chains between junctions → Douglas-Peucker keep set (shared, so neighbours stay gap-free)
@@ -534,6 +535,114 @@ function facadeLayout(A, F, iw, ih, ppi) {
 }
 /* Calm background: k-means on a heavily blurred photo (background pixels only), labels smoothed with a big majority filter so the
    borders become long sweeping curves; small blobs are absorbed; returns a label per pixel (subject pixels = -1). */
+/* ---------- animal faces: a pair of eyes → a stylised, cuttable head fitted to the photo ----------
+   ears as straight-sided triangles (outer + inner ear), eyes, nose, a muzzle split down the middle, chin,
+   2–3 forehead stripes, temples, cheeks, and one continuous head outline; the rest becomes a few calm pieces */
+function kmD(P, k, D, iters = 12) { const n = P.length / D; let C = []; for (let i = 0; i < k; i++) { const j = Math.floor((i + 0.5) * n / k) * D; C.push(Array.from(P.slice(j, j + D))); }
+  for (let it = 0; it < iters; it++) { const S = C.map(() => new Float64Array(D + 1)); for (let j = 0; j < n; j++) { let b = 0, bd = 1e18; for (let c = 0; c < k; c++) { let s = 0; for (let q = 0; q < D; q++) s += (P[j * D + q] - C[c][q]) ** 2; if (s < bd) { bd = s; b = c; } } for (let q = 0; q < D; q++) S[b][q] += P[j * D + q]; S[b][D]++; } C = C.map((c, i) => S[i][D] ? c.map((_, q) => S[i][q] / S[i][D]) : c); } return C; }
+function polyFill(pts, W, H) { const M = new Uint8Array(W * H), n = pts.length; for (let y = 0; y < H; y++) { const yc = y + 0.5, xs = []; for (let i = 0; i < n; i++) { const [x1, y1] = pts[i], [x2, y2] = pts[(i + 1) % n]; if ((y1 <= yc) !== (y2 <= yc)) xs.push(x1 + (yc - y1) / (y2 - y1) * (x2 - x1)); } xs.sort((a, b) => a - b); for (let k = 0; k + 1 < xs.length; k += 2) for (let x = Math.max(0, Math.ceil(xs[k] - 0.5)); x <= Math.min(W - 1, Math.floor(xs[k + 1] - 0.5)); x++) M[y * W + x] = 1; } return M; }
+function findEyePair(A, iw, ih) {
+  const N = iw * ih, smp = []; for (let p = 0; p < N; p += 3) smp.push(A[p * 3], A[p * 3 + 1], A[p * 3 + 2]);
+  const KC = kmeans(new Float32Array(smp), 12, 12, 9), kw = new Float64Array(KC.length), kl = new Int32Array(N);
+  for (let p = 0; p < N; p++) { kl[p] = nearestC(KC, A[p * 3], A[p * 3 + 1], A[p * 3 + 2]); kw[kl[p]]++; }
+  const rar = KC.map(c1 => KC.reduce((a, c2, j) => a + kw[j] / N * Math.hypot(c1[0] - c2[0], c1[1] - c2[1], c1[2] - c2[2]), 0)), rmx = Math.max(...rar) || 1;
+  const sc = new Float32Array(N); for (let p = 0; p < N; p++) sc[p] = rar[kl[p]] / rmx * (0.4 + 0.6 * Math.min(1, Math.hypot(A[p * 3 + 1], A[p * 3 + 2]) / 40));
+  const sb = blur1(sc, iw, ih, 1); let mx = 0; for (let p = 0; p < N; p++) mx = Math.max(mx, sb[p]);
+  const bin = new Uint8Array(N); for (let p = 0; p < N; p++) bin[p] = sb[p] > mx * 0.6 ? 1 : 0;
+  const cc = components(bin, iw, ih), st = new Map();
+  for (let p = 0; p < N; p++) { const r = cc.R[p]; if (cc.from[r] !== 1) continue; const x = p % iw, y = (p / iw) | 0; let o = st.get(r); if (!o) st.set(r, o = { r, n: 0, x0: iw, y0: ih, x1: 0, y1: 0, sx: 0, sy: 0, l: [0, 0, 0] }); o.n++; o.sx += x; o.sy += y; o.x0 = Math.min(o.x0, x); o.x1 = Math.max(o.x1, x); o.y0 = Math.min(o.y0, y); o.y1 = Math.max(o.y1, y); for (let k = 0; k < 3; k++) o.l[k] += A[p * 3 + k]; }
+  const bl = []; for (const o of st.values()) { if (o.n < N * 0.002 || o.n > N * 0.03) continue; const bw = o.x1 - o.x0 + 1, bh = o.y1 - o.y0 + 1, comp = o.n / (bw * bh), asp = bw / bh; if (comp < 0.5 || asp < 0.5 || asp > 2.2) continue;
+    const lab = o.l.map(v => v / o.n), rr = Math.sqrt(o.n) * 0.6; let rs = [0, 0, 0], rn = 0; for (let y = Math.max(0, Math.round(o.y0 - rr)); y <= Math.min(ih - 1, Math.round(o.y1 + rr)); y++) for (let x = Math.max(0, Math.round(o.x0 - rr)); x <= Math.min(iw - 1, Math.round(o.x1 + rr)); x++) { const p = y * iw + x; if (cc.R[p] === o.r) continue; for (let k = 0; k < 3; k++) rs[k] += A[p * 3 + k]; rn++; }
+    const con = rn ? Math.hypot(...rs.map((v, k) => v / rn - lab[k])) : 0; if (con < 15) continue; bl.push({ r: o.r, n: o.n, cx: o.sx / o.n, cy: o.sy / o.n, bb: [o.x0, o.y0, o.x1, o.y1], lab, con }); }
+  let best = null; for (let i = 0; i < bl.length; i++) for (let j = i + 1; j < bl.length; j++) { const a = bl[i], b = bl[j], dl = Math.hypot(...a.lab.map((v, k) => v - b.lab[k])), dx = Math.abs(a.cx - b.cx), dy = Math.abs(a.cy - b.cy);
+    if (dl < 18 && Math.max(a.n, b.n) / Math.min(a.n, b.n) < 2.2 && dx > iw * 0.15 && dx < iw * 0.5 && dy < dx * 0.35) { const v = (a.n + b.n) / (1 + dl / 10); if (!best || v > best.v) best = { v, L: a.cx < b.cx ? a : b, R: a.cx < b.cx ? b : a }; } }
+  if (best) for (const e of [best.L, best.R]) { e.px = []; for (let y = e.bb[1]; y <= e.bb[3]; y++) for (let x = e.bb[0]; x <= e.bb[2]; x++) if (cc.R[y * iw + x] === e.r) e.px.push(y * iw + x); }
+  return best;
+}
+function faceLayout(A, F, iw, ih, ppi, minA, maxA) {
+  const ep = findEyePair(A, iw, ih); if (!ep) return null;
+  const N = iw * ih, eL = ep.L, eR = ep.R, d = Math.hypot(eR.cx - eL.cx, eR.cy - eL.cy), ca = (eR.cx - eL.cx) / d, sa = (eR.cy - eL.cy) / d, C0 = [(eL.cx + eR.cx) / 2, (eL.cy + eR.cy) / 2];
+  const UV = (x, y) => { const dx = x - C0[0], dy = y - C0[1]; return [(dx * ca + dy * sa) / d, (-dx * sa + dy * ca) / d]; }, XY = (u, v) => [C0[0] + (u * ca - v * sa) * d, C0[1] + (u * sa + v * ca) * d], XYs = q => q.map(([u, v]) => XY(u, v));
+  const re = (Math.sqrt(eL.n / Math.PI) + Math.sqrt(eR.n / Math.PI)) / 2 / d, du = 1 / d;
+  // fur vs background: fur is textured, a soft backdrop is not; colour models seeded from the face and the image border
+  const A0 = toLab(F, N), gr = new Float32Array(N); for (let y = 1; y < ih - 1; y++) for (let x = 1; x < iw - 1; x++) { const p = y * iw + x; gr[p] = Math.abs(A0[(p + 1) * 3] - A0[(p - 1) * 3]) + Math.abs(A0[(p + iw) * 3] - A0[(p - iw) * 3]); }
+  const T = blur1(gr, iw, ih, 4), fgS = [], bgS = [], tv = [], U = new Float32Array(N), V = new Float32Array(N);
+  for (let y = 0; y < ih; y++) for (let x = 0; x < iw; x++) { const p = y * iw + x, [u, v] = UV(x + 0.5, y + 0.5); U[p] = u; V[p] = v; const f = [A[p * 3], A[p * 3 + 1], A[p * 3 + 2], T[p] * 2];
+    if (Math.hypot(u, (v - 0.3) * 1.1) < 0.95) { fgS.push(...f); tv.push(T[p]); } if (Math.min(x, y, iw - 1 - x) < 5 && v < 0.6 && Math.hypot(u, v) > 1.3) bgS.push(...f); }
+  if (bgS.length < 4 * 150 || fgS.length < 4 * 300) return null;
+  const Kf = kmD(fgS, 5, 4), Kb = kmD(bgS, 5, 4), fgp = new Float32Array(N); tv.sort((a, b) => a - b); const tm = tv[Math.floor(tv.length / 2)] || 1;
+  for (let p = 0; p < N; p++) { const f = [A[p * 3], A[p * 3 + 1], A[p * 3 + 2], T[p] * 2], dd = K => { let m = 1e9; for (const c of K) m = Math.min(m, Math.hypot(c[0] - f[0], c[1] - f[1], c[2] - f[2], c[3] - f[3])); return m; }, a = dd(Kf), b = dd(Kb); fgp[p] = b / (a + b + 1e-6); }
+  const fs1 = blur1(fgp, iw, ih, 3), S = new Float32Array(N); for (let p = 0; p < N; p++) S[p] = 0.55 * fs1[p] + 0.45 * Math.min(1, T[p] / tm);
+  const S2 = blur1(S, iw, ih, 2); let M = new Uint8Array(N); for (let p = 0; p < N; p++) M[p] = S2[p] > 0.5 ? 1 : 0;
+  { const cc = components(M, iw, ih), c0 = cc.R[Math.round(C0[1]) * iw + Math.round(C0[0])], keep = new Uint8Array(N); for (let p = 0; p < N; p++) keep[p] = cc.R[p] === c0 ? 1 : 0; const inv = new Uint8Array(N); for (let p = 0; p < N; p++) inv[p] = keep[p] ? 0 : 1; const ci = components(inv, iw, ih), edge = new Set(); for (let x = 0; x < iw; x++) { edge.add(ci.R[x]); edge.add(ci.R[(ih - 1) * iw + x]); } for (let y = 0; y < ih; y++) { edge.add(ci.R[y * iw]); edge.add(ci.R[y * iw + iw - 1]); } for (let p = 0; p < N; p++) if (inv[p] && !edge.has(ci.R[p])) keep[p] = 1; M = keep; }
+  const at = (u, v) => { const [x, y] = XY(u, v), xi = Math.floor(x), yi = Math.floor(y); return xi < 0 || yi < 0 || xi >= iw || yi >= ih ? 0 : M[yi * iw + xi]; };
+  const avg = (a, w) => a.map((_, i) => { let s = 0, n = 0; for (let j = Math.max(0, i - w); j <= Math.min(a.length - 1, i + w); j++) { s += a[j]; n++; } return s / n; });
+  // top contour and head sides (face frame: u along the eyes, v down, eye distance = 1)
+  const us = []; for (let u = -2.4; u <= 2.4 + 1e-9; u += du) us.push(u);
+  const vtop = us.map(u => { if (!at(u, 0.2) && !at(u, -0.2) && !at(u, -0.6)) { let any = false; for (let v = -0.6; v > -3; v -= du) if (at(u, v)) { any = true; break; } if (!any) return null; } for (let v = -3; v < 0.3; v += du) if (at(u, v) && at(u, v + du) && at(u, v + 2 * du) && at(u, v + 3 * du)) return v; return null; });
+  const side = (v, s) => { let last = 0, miss = 0; for (let u = 0; Math.abs(u) < 2.4; u += s * du) { if (at(u, v)) { last = u; miss = 0; } else if (++miss > 4) break; } return last; };
+  const vs = 0.35, uLs = Math.max(-2, side(vs, -1)), uRs = Math.min(2, side(vs, 1)); if (uLs > -0.75 || uRs < 0.75) return null;
+  const cIdx = us.map((u, i) => [u, i]).filter(([u, i]) => Math.abs(u) < 0.25 && vtop[i] != null).map(q => vtop[q[1]]).sort((a, b) => a - b), vc = cIdx.length ? cIdx[Math.floor(cIdx.length / 2)] : null; if (vc == null || vc > -0.5) return null;
+  const ear = s => { let ti = -1; for (let i = 0; i < us.length; i++) { const u = us[i]; if (vtop[i] == null || u * s < 0.15 || u * s > Math.abs(s < 0 ? uLs : uRs) + 0.2) continue; if (ti < 0 || vtop[i] < vtop[ti]) ti = i; } if (ti < 0 || vc - vtop[ti] < 0.3) return null;
+    let ii = ti; while (ii - s >= 0 && ii - s < us.length && us[ii] * s > 0.12 && (vtop[ii] == null || vtop[ii] < vc - 0.04)) ii -= s; const I = [us[ii], vtop[ii] ?? vc];
+    let oi = ti; while (oi + s >= 0 && oi + s < us.length && vtop[oi + s] != null && vtop[oi + s] < I[1] + 0.18) oi += s; const O = [us[oi], Math.max(vtop[oi], I[1] + 0.05)];
+    const Tp = [us[ti], vtop[ti]]; if (Math.hypot(I[0] - O[0], I[1] - O[1]) < 0.3) return null; return { T: Tp, I, O }; };
+  const EL = ear(-1), ER = ear(1);
+  // a tip the photo crops off would be cut flat by the frame: keep each tip a little inside, pulled toward the ear's base
+  for (const E of [EL, ER]) if (E) { const m = 0.3 * ppi, B = [(E.I[0] + E.O[0]) / 2, (E.I[1] + E.O[1]) / 2], bp = XY(...B), tp = XY(...E.T); let t = 1;
+    if (tp[1] < m && bp[1] > m) t = Math.min(t, (bp[1] - m) / (bp[1] - tp[1])); if (tp[0] < m && bp[0] > m) t = Math.min(t, (bp[0] - m) / (bp[0] - tp[0])); if (tp[0] > iw - 1 - m && bp[0] < iw - 1 - m) t = Math.min(t, (iw - 1 - m - bp[0]) / (tp[0] - bp[0]));
+    if (t < 1) E.T = [B[0] + t * (E.T[0] - B[0]), B[1] + t * (E.T[1] - B[1])]; }
+  // nose: the pinkest / darkest spot below the eyes
+  let nu = 0, nv = 0.65; { const c = []; for (let p = 0; p < N; p++) { const u = U[p], v = V[p]; if (Math.abs(u) < 0.35 && v > 0.4 && v < 1.0) c.push([A[p * 3 + 1] * 1.2 + Math.max(0, 45 - A[p * 3]) * 0.8, u, v]); } c.sort((a, b) => b[0] - a[0]); const top = c.slice(0, Math.max(5, Math.round(c.length * 0.03))); if (top.length && top[0][0] > 12) { nu = top.reduce((a, q) => a + q[1], 0) / top.length; nv = top.reduce((a, q) => a + q[2], 0) / top.length; } }
+  const vchin = nv + 0.62, mcv = nv + 0.08;
+  // head outline: sides from the photo, ears as triangles, crown from the photo, a rounded jaw
+  const sideL = [], sideR = [], topL = EL ? EL.O[1] : vtop[us.findIndex(v => v != null)] ?? vc, topR = ER ? ER.O[1] : vc;
+  for (let v = vs; v > topL; v -= du) sideL.push([side(v, -1), v]); for (let v = topR; v < vs; v += du) sideR.push([side(v, 1), v]);
+  const sm = q => { const w = Math.max(2, Math.round(0.15 / du)), m = q.map((_, i) => { let b = 0; for (let j = Math.max(0, i - w); j <= Math.min(q.length - 1, i + w); j++) if (Math.abs(q[j][0]) > Math.abs(b)) b = q[j][0]; return b; }), a = avg(m, Math.round(0.1 / du)); return q.map((p, i) => [a[i], p[1]]); }, sL = sm(sideL), sR = sm(sideR);
+  const uA = EL ? EL.I[0] : (sL.length ? sL[sL.length - 1][0] : uLs), uB = ER ? ER.I[0] : (sR.length ? sR[0][0] : uRs), crown = [];
+  { const raw = []; for (let i = 0; i < us.length; i++) if (us[i] > uA && us[i] < uB) raw.push([us[i], vtop[i] ?? vc]); const a = avg(raw.map(p => Math.min(vc + 0.15, p[1])), 6); raw.forEach((p, i) => crown.push([p[0], a[i]])); }
+  const jaw = []; { const pe = 2.6, cv = vchin - vs; for (let k = 0; k <= 24; k++) { const t = k / 24 * Math.PI / 2, c = Math.pow(Math.cos(t), 2 / pe), s = Math.pow(Math.sin(t), 2 / pe); jaw.push([nu + (uRs - nu) * c, vs + cv * s]); } for (let k = 23; k >= 0; k--) { const t = k / 24 * Math.PI / 2, c = Math.pow(Math.cos(t), 2 / pe), s = Math.pow(Math.sin(t), 2 / pe); jaw.push([nu + (uLs - nu) * c, vs + cv * s]); } }
+  const head = [...sL, ...(EL ? [EL.O, EL.T, EL.I] : []), ...crown, ...(ER ? [ER.I, ER.T, ER.O] : []), ...sR, ...jaw];
+  const inHead = polyFill(XYs(head), iw, ih);
+  // forehead stripes: dark bands in the column profile between the ears
+  const vb = -(re + 0.14), zl0 = EL ? EL.I[0] : -0.32, zr0 = ER ? ER.I[0] : 0.32, zl0c = Math.max(-0.55, Math.min(-0.2, zl0)), zr0c = Math.min(0.55, Math.max(0.2, zr0)), bl = -0.58, br = 0.58, zl = Math.min(zl0c, -0.3), zr = Math.max(zr0c, 0.3);
+  // tabby forehead: 2–3 evenly spaced fan-shaped stripes (dark glass) with lighter fur between; the outer bands join the temples
+  const zt = (u, v) => { const f = Math.max(0, Math.min(1, (v - vc) / (vb - vc))), a = zl + (bl - zl) * f, b = zr + (br - zr) * f; return (u - a) / (b - a || 1); };
+  let zs = 0, zss = 0, zn = 0, ts = 0, tn = 0; for (let p = 0; p < N; p++) { if (!M[p]) continue; const u = U[p], v = V[p]; if (v >= vb || v < vc) continue; const t = zt(u, v), L0 = A0[p * 3]; if (t >= 0 && t < 1) { zs += L0; zss += L0 * L0; zn++; } else if (v > vc + 0.15 && Math.abs(u) < 1.1) { ts += L0; tn++; } }
+  const zm = zn ? zs / zn : 0, zsd = zn ? Math.sqrt(Math.max(0, zss / zn - zm * zm)) : 0, tabby = zn > 50 && (zsd >= 9 || (tn > 50 && ts / tn - zm >= 6));
+  const zw = ((zr - zl) + (br - bl)) / 2 * d, mw = ppi * 0.4; let stripes = []; const stripeC = Math.round(zsd);
+  if (tabby) { const k = zw / 7 >= mw ? 3 : zw / 5 >= mw * 0.92 ? 2 : 0, nb = 2 * k + 1; for (let i = 0; i < k; i++) stripes.push({ a: (2 * i + 1) / nb, b: (2 * i + 2) / nb }); }
+  const furT = stripes.length ? [stripes[0].a, stripes[stripes.length - 1].b] : [-1, 2];
+  // labels in paint order
+  const NAMES = ['bg', 'earL', 'innerL', 'earR', 'innerR', 'templeL', 'templeR', 'bridge', 'cheekL', 'cheekR', 'muzzleL', 'muzzleR', 'nose', 'chin', 'eyeL', 'eyeR', 'forehead'], id = n => NAMES.indexOf(n); stripes.forEach((s2, k) => NAMES.push('stripe' + k));
+  const lab = new Int32Array(N).fill(0), ext = (a, t, k) => [a[0] + (a[0] - t[0]) * k, a[1] + (a[1] - t[1]) * k], earM = e => { if (!e) return null; const Tp = e.T, Ip = ext(e.I, Tp, 0.16), Op = ext(e.O, Tp, 0.16), Mp = [Ip[0] + (Op[0] - Ip[0]) * 0.6, Ip[1] + (Op[1] - Ip[1]) * 0.6], Tq = [Ip[0] + (Tp[0] - Ip[0]) * 0.74, Ip[1] + (Tp[1] - Ip[1]) * 0.74]; return { all: polyFill(XYs([Tp, Ip, Op]), iw, ih), inner: polyFill(XYs([Ip, Mp, Tq]), iw, ih), pin: [Tp, Ip, Op, Mp, Tq] }; };
+  const eaL = earM(EL), eaR = earM(ER), nose = polyFill(XYs([[nu - 0.2, nv - 0.12], [nu + 0.2, nv - 0.12], [nu, nv + 0.13]]), iw, ih);
+  const zone = polyFill(XYs([[zl, -3], [zr, -3], [br, vb], [bl, vb]]), iw, ih), eiL = -0.5 + re * 0.85, eiR = 0.5 - re * 0.85, bTop = stripes.length ? [bl + (br - bl) * furT[0], bl + (br - bl) * furT[1]] : [-0.3, 0.3], bridge = polyFill(XYs([[Math.max(bTop[0], eiL - 0.05), vb], [Math.min(bTop[1], eiR + 0.05), vb], [eiR, -0.02], [nu + 0.3, nv - 0.12], [nu - 0.3, nv - 0.12], [eiL, -0.02]]), iw, ih);
+  const eyeIn = (e, x, y) => { const rx = (e.bb[2] - e.bb[0]) / 2 + 1.5, ry = (e.bb[3] - e.bb[1]) / 2 + 1.5, cx = (e.bb[0] + e.bb[2] + 1) / 2, cy = (e.bb[1] + e.bb[3] + 1) / 2; return ((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2 <= 1; };
+  for (let y = 0; y < ih; y++) for (let x = 0; x < iw; x++) { const p = y * iw + x, u = U[p], v = V[p]; if (!inHead[p]) continue; let L;
+    if (eyeIn(eL, x + 0.5, y + 0.5)) L = 'eyeL'; else if (eyeIn(eR, x + 0.5, y + 0.5)) L = 'eyeR'; else if (nose[p]) L = 'nose';
+    else if (eaL && eaL.all[p]) L = eaL.inner[p] ? 'innerL' : 'earL'; else if (eaR && eaR.all[p]) L = eaR.inner[p] ? 'innerR' : 'earR';
+    else if (((u - nu) / 0.5) ** 2 + ((v - mcv) / 0.28) ** 2 < 1) L = u < nu ? 'muzzleL' : 'muzzleR'; else if (v > mcv && Math.abs(u - nu) < 0.36) L = 'chin';
+    else if (zone[p] && v < vb && (() => { const t = zt(u, v); return t >= furT[0] && t < furT[1]; })()) { const t = zt(u, v), k = stripes.findIndex(q => t >= q.a && t < q.b); L = k >= 0 ? 'stripe' + k : 'forehead'; } else if (bridge[p]) L = 'bridge';
+    else if (v < 0) L = u < (bl + br) / 2 ? 'templeL' : 'templeR'; else L = u < nu ? 'cheekL' : 'cheekR'; lab[p] = id(L); }
+  // background (and body below the head): a few calm sweeping pieces
+  const bgL = calmBackground(A, inHead, iw, ih, { maxA: maxA * 0.9, pieces: 5 }), key = new Int32Array(N); for (let p = 0; p < N; p++) key[p] = inHead[p] ? lab[p] : V[p] > vs ? NAMES.length + (U[p] < nu ? 0 : 1) : NAMES.length + 2 + bgL[p]; // below the cheek line: the body as two calm pieces split under the chin (none wraps around the jaw)
+  { // a label keeps its main part; stray crumbs (e.g. where an ear base overlaps a stripe) join the neighbour they share the most border with
+    const c0 = components(key, iw, ih), ar = new Float64Array(c0.n); for (let p = 0; p < N; p++) ar[c0.R[p]]++;
+    const big = new Map(), kOf = new Int32Array(c0.n); for (let p = 0; p < N; p++) kOf[c0.R[p]] = key[p]; for (let r = 0; r < c0.n; r++) { const k = kOf[r]; if (!big.has(k) || ar[r] > ar[big.get(k)]) big.set(k, r); }
+    const crumb = r => big.get(kOf[r]) !== r && ar[r] < minA * 0.5, nb = new Map(); for (let p = 0; p < N; p++) { const r = c0.R[p]; if (!crumb(r)) continue; const x = p % iw, y = (p / iw) | 0; for (const q of [x > 0 ? p - 1 : -1, x < iw - 1 ? p + 1 : -1, y > 0 ? p - iw : -1, y < ih - 1 ? p + iw : -1]) if (q >= 0 && c0.R[q] !== r) { const m = nb.get(r) || nb.set(r, new Map()).get(r); m.set(key[q], (m.get(key[q]) || 0) + 1); } }
+    const to = new Map(); for (const [r, m] of nb) to.set(r, [...m.entries()].sort((a, b) => b[1] - a[1])[0][0]); for (let p = 0; p < N; p++) { const t = to.get(c0.R[p]); if (t !== undefined) key[p] = t; } }
+  const cc = components(key, iw, ih), type = cc.from.map(k => k < NAMES.length ? NAMES[k] : 'bg'), sumC = new Float64Array(cc.n * 4), area = new Float64Array(cc.n);
+  for (let p = 0; p < N; p++) area[cc.R[p]]++;
+  const col = [...Array(cc.n)].map(() => null), pxOf = [...Array(cc.n)].map(() => []); for (let p = 0; p < N; p++) pxOf[cc.R[p]].push(p);
+  for (let r = 0; r < cc.n; r++) { let px = pxOf[r]; const t = type[r]; if (/^eye/.test(t)) { const e = t === 'eyeL' ? eL : eR; px = e.px.slice().sort((a, b) => A0[b * 3] - A0[a * 3]).slice(0, Math.max(1, Math.round(e.px.length * 0.15))); } else if (/stripe/.test(t)) px = px.slice().sort((a, b) => A0[a * 3] - A0[b * 3]).slice(0, Math.max(1, px.length >> 1)); else if (/^inner/.test(t)) px = px.slice().sort((a, b) => A0[b * 3 + 1] - A0[a * 3 + 1]).slice(0, Math.max(1, Math.round(px.length * 0.4))); else if (/^cheek/.test(t)) px = px.slice().sort((a, b) => A0[a * 3] - A0[b * 3]).slice(0, Math.max(1, px.length >> 1)); else if (/^(muzzle|chin)/.test(t)) px = px.slice().sort((a, b) => A0[b * 3] - A0[a * 3]).slice(0, Math.max(1, Math.round(px.length * 0.4))); else if (t === 'forehead' && stripes.length) px = px.slice().sort((a, b) => A0[b * 3] - A0[a * 3]).slice(0, Math.max(1, px.length >> 1)); else if (/inner/.test(t)) px = px.slice().sort((a, b) => A0[b * 3 + 1] - A0[a * 3 + 1]).slice(0, Math.max(1, px.length >> 1)); const c = [0, 0, 0]; for (const p of px) for (let k = 0; k < 3; k++) c[k] += F[p * 3 + k]; col[r] = c.map(v => v / px.length); }
+  const KEY = /^(eye|nose|inner|stripe)/, subj = type.map(t => t === 'bg' ? 0 : 1), FEAT = /^(eye|nose|inner|stripe|ear|muzzle|chin|forehead)/, adv = type.map((t, r) => t !== 'bg' && area[r] >= minA * 0.2 && (KEY.test(t) || (FEAT.test(t) && area[r] < minA)) ? 1 : 0);
+  // painted: pupils (the darkest part of each eye) and a few whiskers
+  const dots = []; for (const e of [eL, eR]) { const px = e.px.slice().sort((a, b) => A0[a * 3] - A0[b * 3]), dk = px.slice(0, Math.max(3, Math.round(px.length * 0.12))); let sx = 0, sy = 0, sxx = 0, syy = 0; for (const p of dk) { const x = p % iw + 0.5, y = ((p / iw) | 0) + 0.5; sx += x; sy += y; sxx += x * x; syy += y * y; } const n = dk.length, mx = sx / n, my = sy / n, ex = (e.bb[2] - e.bb[0] + 1) / 2, ey = (e.bb[3] - e.bb[1] + 1) / 2; dots.push({ cx: mx, cy: my, rx: Math.max(ex * 0.16, Math.min(ex * 0.35, Math.sqrt(Math.max(0.2, sxx / n - mx * mx)) * 1.6)), ry: Math.max(ey * 0.5, Math.min(ey * 0.8, Math.sqrt(Math.max(0.2, syy / n - my * my)) * 2)), hex: '#141414' }); }
+  const whiskers = []; for (const s of [-1, 1]) for (let k = 0; k < 3; k++) { const a = [nu + s * 0.42, nv + 0.12 + k * 0.08], b = [nu + s * (0.85 + k * 0.05), nv + 0.0 + k * 0.17], c = [nu + s * (1.25 + k * 0.05), nv - 0.04 + k * 0.3]; whiskers.push([a, b, c].map(([u, v]) => XY(u, v))); }
+  const pins = [...(eaL ? eaL.pin : []), ...(eaR ? eaR.pin : []), [nu - 0.2, nv - 0.12], [nu + 0.2, nv - 0.12], [nu, nv + 0.13]].map(([u, v]) => XY(u, v));
+  return { R: cc.R, n: cc.n, col, type, subj, adv, head: inHead, dots, whiskers, pins, stripes: stripes.length, stripeC, ears: (EL ? 1 : 0) + (ER ? 1 : 0), frame: { C0, d, ca, sa, re, nu, nv, vc, uLs, uRs, EL, ER } };
+}
 function calmBackground(A, mask, W, H, { pieces = 5, maxA = Infinity } = {}) {
   const N = W * H, r = Math.max(4, Math.round(Math.max(W, H) / 14)), ch = [0, 1, 2].map(c => { const a = new Float32Array(N), m = new Float32Array(N); for (let p = 0; p < N; p++) if (!mask[p]) { a[p] = A[p * 3 + c]; m[p] = 1; } const ba = blur1(a, W, H, r), bm = blur1(m, W, H, r); for (let p = 0; p < N; p++) ba[p] = bm[p] > 1e-3 ? ba[p] / bm[p] : 0; return ba; });
   const smp = [], stp = Math.max(1, Math.floor(N / 6000)); for (let p = 0; p < N; p += stp) if (!mask[p]) smp.push(ch[0][p], ch[1][p], ch[2][p]);
@@ -748,17 +857,20 @@ function glassBuild(img, o) {
   const geo = o.style === 'geometric' || (o.style !== 'organic' && (axf >= 0.5 || (!!fz0 && fz0.ops.filter(q => q.type && q.type !== 'wall').length >= 3)));
   if (geo && o.style !== 'geometric') notes.push('Straight-line style chosen automatically (lots of horizontal/vertical edges, e.g. a building) — windows and doors become rectangles. Switch Style to Organic for curves.');
   if (geo && sm.how !== 'backdrop') { sm.mask.fill(1); sm.how = 'off'; sm.frac = 1; }
+  // an animal face (two eyes found): a stylised, cuttable head layout replaces the free-form merge
+  const fc = !geo && o.face !== false && o.style !== 'geometric' && o.smallFeat !== 'off' && o.focus !== false ? faceLayout(A, F, iw, ih, ppi, minA, rules.maxAreaIn * ppi * ppi) : null;
+  if (fc) { mask = fc.head; sm.mask = fc.head; sm.how = 'face'; let hs = 0; for (let p = 0; p < n0; p++) hs += fc.head[p]; sm.frac = hs / n0; }
   const advMinIn = Math.max(0.35, rules.minAreaIn * 0.18), advMin = o.smallFeat === 'pieces' ? advMinIn * ppi * ppi : 0, advDE = 22;
   const sp = geo ? xyCut(A, iw, ih, Math.max(3, Math.round(Math.sqrt(minA) * 0.35)), Math.round(n0 / (S0 * S0 * 2)), 0.5) : slic(A, iw, ih, S0, mask, 6);
   // calm background behind a found subject: a few large sweeping pieces from heavily blurred colour areas, so the subject pops
-  const calm = !geo && o.calmBg !== false && !!o.subjectBox && ['grok', 'box'].includes(sm.how) && sm.frac < 0.45;
+  const calm = !geo && !fc && o.calmBg !== false && !!o.subjectBox && ['grok', 'box'].includes(sm.how) && sm.frac < 0.45;
   if (calm) { const bgL = calmBackground(A, mask, iw, ih, { maxA: rules.maxAreaIn * ppi * ppi * 0.9, pieces: Math.max(4, Math.min(7, Math.round(n0 * (1 - sm.frac) / (rules.maxAreaIn * ppi * ppi * 0.55)))) }), key = new Int32Array(n0); let mx = 0; for (let p = 0; p < n0; p++) mx = Math.max(mx, sp.R[p]);
     for (let p = 0; p < n0; p++) key[p] = mask[p] ? sp.R[p] : mx + 1 + bgL[p]; const c = components(key, iw, ih); sp.R = c.R; sp.n = c.n; }
   const fz = geo ? fz0 : null;
-  const rm = fz ? { R: fz.R, n: fz.n } : ragMerge(sp.R, sp.n, A, Ec, mask, iw, ih, { subjT, featT, bgT, crumb: minA * 0.25, absMin: minA * 0.6, weakT: 0.15, strongT: 0.45 - det * 0.015, hardCap: Math.round(n0 / (minA * 1.5)), subjMax: subjT * 4, bgMax: rules.maxAreaIn * ppi * ppi, keepSil: sm.how !== 'none' && sm.how !== 'off', featMap, advMin, advDE, geo });
+  const rm = fz ? { R: fz.R, n: fz.n } : fc ? { R: fc.R, n: fc.n } : ragMerge(sp.R, sp.n, A, Ec, mask, iw, ih, { subjT, featT, bgT, crumb: minA * 0.25, absMin: minA * 0.6, weakT: 0.15, strongT: 0.45 - det * 0.015, hardCap: Math.round(n0 / (minA * 1.5)), subjMax: subjT * 4, bgMax: rules.maxAreaIn * ppi * ppi, keepSil: sm.how !== 'none' && sm.how !== 'off', featMap, advMin, advDE, geo });
   const RN = rm.n, rs3 = new Float64Array(RN * 3), ra = new Float64Array(RN), rsub = new Float64Array(RN);
   for (let p = 0; p < n0; p++) { const r = rm.R[p]; ra[r]++; rs3[r * 3] += F[p * 3]; rs3[r * 3 + 1] += F[p * 3 + 1]; rs3[r * 3 + 2] += F[p * 3 + 2]; rsub[r] += mask[p]; }
-  const colors = fz ? fz.col.map(c => c.slice()) : [...Array(RN).keys()].map(r => [rs3[r * 3] / ra[r], rs3[r * 3 + 1] / ra[r], rs3[r * 3 + 2] / ra[r]]), subjOfLab = [...Array(RN).keys()].map(r => rsub[r] / ra[r] > 0.5 ? 1 : 0);
+  const colors = fz ? fz.col.map(c => c.slice()) : fc ? fc.col.map(c => c.slice()) : [...Array(RN).keys()].map(r => [rs3[r * 3] / ra[r], rs3[r * 3 + 1] / ra[r], rs3[r * 3 + 2] / ra[r]]), subjOfLab = fc ? fc.subj.slice() : [...Array(RN).keys()].map(r => rsub[r] / ra[r] > 0.5 ? 1 : 0);
   if (calm) { // small subject pieces on the outline that look like the background next to them (a pole, a bit of fence) belong to the background
     const lab3 = new Float64Array(RN * 3); for (let p = 0; p < n0; p++) { const r = rm.R[p]; lab3[r * 3] += A[p * 3]; lab3[r * 3 + 1] += A[p * 3 + 1]; lab3[r * 3 + 2] += A[p * 3 + 2]; }
     const lb = r => [lab3[r * 3] / ra[r], lab3[r * 3 + 1] / ra[r], lab3[r * 3 + 2] / ra[r]], dB = new Float64Array(RN).fill(1e9), bN = new Int32Array(RN).fill(-1), dS = new Float64Array(RN).fill(1e9), nb = new Float64Array(RN), sA = subjOfLab.reduce((a, v, r) => a + (v ? ra[r] : 0), 0);
@@ -766,8 +878,8 @@ function glassBuild(img, o) {
     for (let y = 0; y < ih - 1; y++) for (let x = 0; x < iw - 1; x++) { const p = y * iw + x; pr(rm.R[p], rm.R[p + 1]); pr(rm.R[p], rm.R[p + iw]); }
     for (let r = 0; r < RN; r++) if (subjOfLab[r] && ra[r] < sA * 0.1 && ((nb[r] > Math.sqrt(ra[r]) * 0.8 && dB[r] < 16 && dB[r] < dS[r] * 0.8) || (nb[r] > Math.sqrt(ra[r]) * 2.2 && dB[r] < 20 && dB[r] < dS[r]))) { subjOfLab[r] = 0; for (let p = 0; p < n0; p++) if (rm.R[p] === r) { mask[p] = 0; if (bN[r] >= 0) rm.R[p] = bN[r]; } } }
   // key small features (eyes, nose, windows, door): small but high-contrast regions on the subject are kept as "advanced" pieces
-  const advOfLab = new Uint8Array(RN);
-  if (advMin) { const rl = new Float64Array(RN * 3), fa = new Float64Array(RN); for (let p = 0; p < n0; p++) { const r = rm.R[p]; rl[r * 3] += A[p * 3]; rl[r * 3 + 1] += A[p * 3 + 1]; rl[r * 3 + 2] += A[p * 3 + 2]; if (featMap) fa[r] += featMap[p]; }
+  const advOfLab = new Uint8Array(RN); if (fc) fc.adv.forEach((v, r) => advOfLab[r] = v);
+  if (advMin && !fc) { const rl = new Float64Array(RN * 3), fa = new Float64Array(RN); for (let p = 0; p < n0; p++) { const r = rm.R[p]; rl[r * 3] += A[p * 3]; rl[r * 3 + 1] += A[p * 3 + 1]; rl[r * 3 + 2] += A[p * 3 + 2]; if (featMap) fa[r] += featMap[p]; }
     const bc = new Float64Array(RN), bt = new Float64Array(RN), mnd = new Float64Array(RN).fill(1e9), labOf = r => [rl[r * 3] / ra[r], rl[r * 3 + 1] / ra[r], rl[r * 3 + 2] / ra[r]];
     const pair = (a, b) => { if (a === b) return; const la = labOf(a), lb = labOf(b), d = Math.hypot(la[0] - lb[0], la[1] - lb[1], la[2] - lb[2]); if (d < mnd[a]) mnd[a] = d; if (d < mnd[b]) mnd[b] = d; };
     for (let y = 0; y < ih; y++) for (let x = 0; x < iw; x++) { const p = y * iw + x, r = rm.R[p]; let edge = false; if (x < iw - 1 && r !== rm.R[p + 1]) { pair(r, rm.R[p + 1]); edge = true; } if (y < ih - 1 && r !== rm.R[p + iw]) { pair(r, rm.R[p + iw]); edge = true; } if (!edge && ((x > 0 && rm.R[p - 1] !== r) || (y > 0 && rm.R[p - iw] !== r))) edge = true; if (edge) { bt[r]++; bc[r] += Cm[p]; } }
@@ -804,15 +916,15 @@ function glassBuild(img, o) {
     Object.assign(st, rebuild(st.R, W, H, st.col, st.fixed, st.group, st.subj, st.adv)); mergeSmall(st, W, H, minA, ppi);
   }
   fixCheckers(st.R, W, H); Object.assign(st, rebuild(st.R, W, H, st.col, st.fixed, st.group, st.subj, st.adv));
-  const chains = []; rings = vectorize(st.R, st.n, W, H, { smooth: geo ? 0 : 3, eps: geo ? 0.75 : rules.eps, chains });
+  const chains = []; rings = vectorize(st.R, st.n, W, H, { smooth: geo ? 0 : 3, eps: geo ? 0.75 : rules.eps, chains, pins: fc ? fc.pins.map(([x, y]) => [x + G.f, y + G.f]) : null });
   if (geo) { rings.forEach(rs => rs && rs.forEach(r => r.forEach(q => q.hard = true))); chains.forEach(c => c.pts && c.pts.forEach(q => q.hard = true)); }
   // piece colours: the photo's average under each piece, then grouped into the chosen number of glass colours
   const sa = new Float64Array(st.n * 4); { for (let y = 0; y < ih; y++) for (let x = 0; x < iw; x++) { const r = st.R[(y + G.f) * W + x + G.f], q = y * iw + x; if (st.fixed[r]) continue; sa[r * 4] += F[q * 3]; sa[r * 4 + 1] += F[q * 3 + 1]; sa[r * 4 + 2] += F[q * 3 + 2]; sa[r * 4 + 3]++; }
-    if (!fz) for (let r = 0; r < st.n; r++) if (sa[r * 4 + 3]) st.col[r] = [sa[r * 4] / sa[r * 4 + 3], sa[r * 4 + 1] / sa[r * 4 + 3], sa[r * 4 + 2] / sa[r * 4 + 3]]; }
+    if (!fz && !fc) for (let r = 0; r < st.n; r++) if (sa[r * 4 + 3]) st.col[r] = [sa[r * 4] / sa[r * 4 + 3], sa[r * 4 + 1] / sa[r * 4 + 3], sa[r * 4 + 2] / sa[r * 4 + 3]]; }
   const kc = Math.max(2, Math.min(10, Math.round(o.colors))), qs = [];
   for (let r = 0; r < st.n; r++) if (!st.fixed[r] && (!calm || st.subj[r])) { const reps = Math.max(1, Math.min(40, Math.round(sa[r * 4 + 3] / minA * 2 * (st.subj[r] && sm.frac < 0.45 ? 3 : 1)))); for (let k = 0; k < reps; k++) qs.push(...st.col[r]); }
   const qC = kmeans(new Float32Array(qs), kc, 20, 13), userCols = (o.userColors || []).map(u => [u.name, ...[1, 3, 5].map(i => parseInt(u.hex.slice(i, i + 2), 16))]);
-  const glassOf = r => st.fixed[r] ? { name: o.frameGlass || nearestGlass(dark).name, rgb: st.col[r] } : fz ? nearestGlass(st.col[r], userCols) : calm && !st.subj[r] ? nearestGlass(st.col[r], userCols) : calm && (() => { const c0 = Math.hypot(...gLab(...st.col[r]).slice(1)); return c0 >= 30 && Math.hypot(...gLab(...qC[nearestC(qC, ...st.col[r])]).slice(1)) < c0 * 0.6; })() ? nearestGlass(st.col[r], userCols) : nearestGlass(qC[nearestC(qC, ...st.col[r])], userCols);
+  const glassOf = r => st.fixed[r] ? { name: o.frameGlass || nearestGlass(dark).name, rgb: st.col[r] } : fz || fc ? nearestGlass(st.col[r], userCols) : calm && !st.subj[r] ? nearestGlass(st.col[r], userCols) : calm && (() => { const c0 = Math.hypot(...gLab(...st.col[r]).slice(1)); return c0 >= 30 && Math.hypot(...gLab(...qC[nearestC(qC, ...st.col[r])]).slice(1)) < c0 * 0.6; })() ? nearestGlass(st.col[r], userCols) : nearestGlass(qC[nearestC(qC, ...st.col[r])], userCols);
   // piece data
   const D = distT(st.R, W, H), s = regionStats(st.R, st.n, W, H), best = new Int32Array(st.n).fill(-1), bestD = new Float32Array(st.n);
   for (let i = 0; i < W * H; i++) { const r = st.R[i]; if (D[i] > bestD[r]) { bestD[r] = D[i]; best[r] = i; } }
@@ -846,6 +958,25 @@ function glassBuild(img, o) {
       if (neu.length >= 2) { const Ls = neu.map(p => gLab(...p.src)[0]).sort((a, b) => a - b), med = Ls[Math.floor(Ls.length / 2)], pick = names => { for (const n of names) { const g = GLASS_PALETTE.find(q => q[0] === n); if (g && !bgG.has(n)) return g; } return null; };
         const light = pick(['White opal', 'Wispy white', 'Clear textured', 'Light gray']), dark = pick(['Charcoal', 'Medium gray', 'Black opal']), xs2 = sp2.map(p => p.label[0]), cx = (Math.min(...xs2) + Math.max(...xs2)) / 2, bw2 = Math.max(...xs2) - Math.min(...xs2) || 1, chr = p => { const l = gLab(...p.src); return Math.hypot(l[1], l[2]); }, breast = sp2.reduce((a, p) => chr(p) > chr(a) ? p : a), front = Math.sign(breast.label[0] - cx) || 1;
         for (const p of neu) { const L = gLab(...p.src)[0], g = L >= med + 2 && (p.label[0] - cx) * front >= -bw2 * 0.1 ? light : L <= med - 2 ? dark : null; if (g) { p.glass = g[0]; p.rgb = [g[1], g[2], g[3]]; } } } } }
+  // face: features never share glass with what they touch (inner ear vs ear, stripes vs fur, eyes, nose, muzzle), and the background contrasts with the head
+  if (fc) { const byId = new Map(pieces.map(p => [p.id, p])), tc = new Map();
+    for (let y = 0; y < ih; y++) for (let x = 0; x < iw; x++) { const r = st.R[(y + G.f) * W + x + G.f], t = fc.type[fc.R[y * iw + x]]; let m = tc.get(r); if (!m) tc.set(r, m = new Map()); m.set(t, (m.get(t) || 0) + 1); }
+    for (const p of pieces) { const m = tc.get(p.id); p.part = m ? [...m.entries()].sort((a, b) => b[1] - a[1])[0][0] : 'frame'; }
+    const adj = new Map(pieces.map(p => [p.id, new Set()])); for (let y = 0; y < H - 1; y++) for (let x = 0; x < W - 1; x++) { const a = st.R[y * W + x]; for (const b of [st.R[y * W + x + 1], st.R[(y + 1) * W + x]]) if (a !== b && byId.has(a) && byId.has(b) && !byId.get(a).frame && !byId.get(b).frame) { adj.get(a).add(b); adj.get(b).add(a); } }
+    const FEAT = /^(eye|nose|inner|stripe|ear|muzzle|chin|forehead)/, must = (a, b) => a.subj !== b.subj || FEAT.test(a.part) || FEAT.test(b.part), lum = c => gLab(...c)[0];
+    const pick = (p, avoid, pref) => { const neu = Math.hypot(...gLab(...p.src).slice(1)) < 14 && !/^inner|^nose|^eye/.test(p.part), c = GLASS_PALETTE.filter(g => (!neu || !p.subj || Math.hypot(...gLab(g[1], g[2], g[3]).slice(1)) < 14) && !avoid.some(q => q[0] === g[0] || cdist([g[1], g[2], g[3]], q[1]) < (p.subj ? 40 : 70)) && (!pref || pref(g))).map(g => [g, cdist(p.src, [g[1], g[2], g[3]])]).sort((a, b) => a[1] - b[1]); return c.length ? c[0][0] : null; };
+    const G3 = g => [g[1], g[2], g[3]], chrG = g => Math.hypot(...gLab(...G3(g)).slice(1)), byName = n => GLASS_PALETTE.find(g => g[0] === n), nearestIn = (c, list) => list.map(byName).filter(Boolean).sort((a, b) => cdist(c, G3(a)) - cdist(c, G3(b)))[0];
+    for (const p of pieces) { if (p.frame || p.user) continue; const lc = gLab(...p.src), chr = Math.hypot(lc[1], lc[2]); let g = null;
+      if (/^inner/.test(p.part)) g = nearestIn(p.src, ['Pink', 'Flesh / peach', 'Rose']);
+      else if (p.part === 'nose') g = lc[1] > 6 ? nearestIn(p.src, ['Pink', 'Rose', 'Flesh / peach']) : nearestIn(p.src, ['Charcoal', 'Black opal', 'Brown']);
+      else if (/^eye/.test(p.part)) g = GLASS_PALETTE.filter(q => chrG(q) >= 25).sort((a, b) => cdist(p.src, G3(a)) - cdist(p.src, G3(b)))[0];
+      else if (chr < 14) g = GLASS_PALETTE.filter(q => chrG(q) < 14).sort((a, b) => cdist(p.src, G3(a)) - cdist(p.src, G3(b)))[0];
+      if (g) { p.glass = g[0]; p.rgb = G3(g); } }
+    for (let pass = 0; pass < 3; pass++) for (const p of pieces) { if (p.frame || p.user) continue; const nbs = [...adj.get(p.id)].map(i => byId.get(i)).filter(q => must(p, q) && (p.subj ? FEAT.test(p.part) || !q.subj : true));
+      if (!p.subj && !nbs.some(q => q.subj)) continue; if (p.subj && !FEAT.test(p.part)) continue;
+      const avoid = nbs.filter(q => p.subj ? true : q.subj).map(q => [q.glass, q.rgb]), clash = avoid.some(q => q[0] === p.glass || cdist(p.rgb, q[1]) < (p.subj ? 40 : 70)); if (!clash) continue;
+      const pref = /^inner|^nose/.test(p.part) ? g => ['Pink', 'Flesh / peach', 'Rose', 'Light amber', 'Wispy white'].includes(g[0]) : /^muzzle|^chin/.test(p.part) ? g => lum([g[1], g[2], g[3]]) > Math.max(...nbs.filter(q => q.subj).map(q => lum(q.rgb)), 0) + 6 : /^stripe/.test(p.part) ? g => lum([g[1], g[2], g[3]]) < Math.min(...nbs.map(q => lum(q.rgb))) - 8 : null;
+      const g = pick(p, avoid, pref) || pick(p, avoid, null); if (g) { p.glass = g[0]; p.rgb = [g[1], g[2], g[3]]; } } }
   // number top→bottom in 1" bands, left→right
   pieces.sort((a, b) => Math.floor(a.label[1] / ppi) - Math.floor(b.label[1] / ppi) || a.label[0] - b.label[0]); pieces.forEach((p, j) => p.n = j + 1);
   // legend
@@ -869,9 +1000,10 @@ function glassBuild(img, o) {
   if (fz) { const ov = new Uint8Array(n0); for (const l of fz.overlay) for (let i = 1; i < l.length; i++) { const [ax, ay] = l[i - 1], [bx, by] = l[i], n = Math.ceil(Math.hypot(bx - ax, by - ay)) + 1; for (let t = 0; t <= n; t++) { const x = Math.round(ax + (bx - ax) * t / n), y = Math.round(ay + (by - ay) * t / n); if (x >= 0 && y >= 0 && x < iw && y < ih) ov[y * iw + x] = 1; } }
     cOn = 0; cAll = 0; for (let y = 2; y < ih - 2; y++) for (let x = 2; x < iw - 2; x++) { const q = y * iw + x; if (!fz.main[q]) continue; cAll++; const g = (y + G.f) * W + x + G.f, r = st.R[g]; let on = false; for (let j = -2; j <= 2 && !on; j++) for (let i = -2; i <= 2; i++) if (st.R[g + j * W + i] !== r || ov[q + j * iw + i]) { on = true; break; } if (on) cOn++; } }
   const outlineKept = cAll ? Math.round(cOn / cAll * 100) : 100;
-  if (outlineKept < 45 && sm.how !== 'none') notes.push(`Only ${outlineKept}% of the subject’s outlines became lead lines at this size. For more recognisable detail, make the panel larger, lower Simplicity, or raise Detail on subject.`);
+  if (outlineKept < 45 && sm.how !== 'none' && !fc) notes.push(`Only ${outlineKept}% of the subject’s outlines became lead lines at this size. For more recognisable detail, make the panel larger, lower Simplicity, or raise Detail on subject.`);
   // painted detail: strong interior contours that are not lead lines (subject + must-keep features; whole panel when there is no subject)
   let detail = [], dots = [], shapes = [], overlay = [];
+  if (fc) notes.push(`Face layout: ${fc.ears} ear${fc.ears === 1 ? '' : 's'} as triangles with inner ears, eyes with painted pupils, nose, muzzle split down the middle, chin${fc.stripes ? ', ' + fc.stripes + ' forehead stripes' : ''}; the background is a few calm pieces.`);
   if (fz) { for (const l of fz.overlay) overlay.push(l.map(([x, y]) => [r2(x + G.f), r2(y + G.f)])); notes.push(`Building layout: ${fz.ops.length} windows/doors as rectangles${fz.sky ? ', sky' : ''}${fz.cornices.length ? ', ' + fz.cornices.length + ' cornice line' + (fz.cornices.length > 1 ? 's' : '') : ''}; bars and planks are came lines.`); }
   if (o.paint !== false && o.smallFeat !== 'off') {
     const hasSubj = sm.how !== 'none' && sm.how !== 'off' && !geo, thin = contourMap(A, E, iw, ih, hasSubj ? 0.45 : geo ? 0.5 : 0.62, 0.28, Math.round(ppi * 0.3), false), allow = new Uint8Array(n0);
@@ -905,6 +1037,7 @@ function glassBuild(img, o) {
         const lab = (x, y) => { const xi = Math.round(x), yi = Math.round(y); return xi < 0 || yi < 0 || xi >= iw || yi >= ih ? -2 : st.R[(yi + G.f) * W + xi + G.f]; };
         for (const off of [-hw / 3, hw / 3]) { let run = [], best = []; for (let t = -hl; t <= hl; t += 1) { const x = wing.mx + vx * t + ux * off, y = wing.my + vy * t + uy * off, ok = [[0, 0], [ux * ins, uy * ins], [-ux * ins, -uy * ins], [vx * ins, vy * ins], [-vx * ins, -vy * ins]].every(([a, b]) => lab(x + a, y + b) === wing.r); if (ok) run.push([x, y]); else { if (run.length > best.length) best = run; run = []; } } if (run.length > best.length) best = run;
           if (best.length > hl * 0.7) detail.push([best[0], best[Math.floor(best.length / 2)], best[best.length - 1]].map(([x, y]) => [r2(x + G.f), r2(y + G.f)])); } } }
+    if (fc) { dots = fc.dots.map(q => ({ cx: r2(q.cx + G.f), cy: r2(q.cy + G.f), rx: r2(q.rx), ry: r2(q.ry), hex: q.hex })); shapes = []; detail = fc.whiskers.map(l => l.map(([x, y]) => [r2(x + G.f), r2(y + G.f)])); }
     if (fz) detail = detail.filter(l => l.length >= 2 && Math.hypot(l[l.length - 1][0] - l[0][0], l[l.length - 1][1] - l[0][1]) > iw * 0.12).slice(0, 4); // graffiti and stains are dropped
     // legs and perch: a band just under a found subject keeps its few longest contours (legs, the branch or wire it stands on)
     if (calm) { let bx0 = iw, by0 = ih, bx1 = 0, by1 = 0; for (let p = 0; p < n0; p++) if (mask[p]) { const x = p % iw, y = (p / iw) | 0; if (x < bx0) bx0 = x; if (x > bx1) bx1 = x; if (y < by0) by0 = y; if (y > by1) by1 = y; }
