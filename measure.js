@@ -78,7 +78,7 @@ function measureFlatOpen(out, { photo, hint, saved }) {
     <div id="mVals"></div>
     <p class="muted small">Accuracy: keep the camera straight-on (parallel to the surface) with the reference in the same plane as what you measure. Tilt, lens distortion and depth differences cause errors — typically ±2–5% when done carefully, more at an angle.</p></div>
     <div id="mGrokOut"></div>
-    <div class="card"><div class="export-row"><button class="primary" id="mSave">${saved ? 'Saved ✓' : 'Save to History'}</button><button class="pill" id="mGlass">🪟 Use as stained glass finished size</button></div></div>`;
+    ${actBar({ save: 'mSave', saved: !!saved, extra: '<button class="pill" id="mGlass">🪟 Use as stained-glass size</button>' })}`;
   let mk;
   const calc = () => { const nat = mk ? mk.natural() : [1, 1], ref = st.lines.find(l => l.id === 'ref'), rp = lineLenPx(ref, nat), mmpp = refMM(st) && rp > 2 ? refMM(st) / rp : 0; st.lines.forEach(l => { l.mm = l.id === 'ref' ? refMM(st) : mmpp ? lineLenPx(l, nat) * mmpp : null; }); return mmpp; };
   const vals = () => { const mmpp = calc(), ms = st.lines.filter(l => l.id !== 'ref'), a = ms[0], b = ms[1];
@@ -150,7 +150,7 @@ function measure3DOpen(out, { photos, hint, saved }) {
     <div id="m3Viewer" style="margin-top:6px"></div>
     <div class="row gap" style="margin-top:6px"><button class="pill" data-vw="iso">3/4</button><button class="pill" data-vw="front">Front</button><button class="pill" data-vw="side">Side</button><button class="pill" data-vw="top">Top</button></div>
     <p class="muted small">Rotate with a finger or Pencil, pinch to zoom, two fingers to pan. This is an approximate shape from photos, not a 3D scan — Safari web apps can’t use the iPhone LiDAR scanner. For a true scan, use a scanner app and open the file in “3D scan file”.</p>
-    <div class="export-row"><button class="primary" id="m3Save">${saved ? 'Saved ✓' : 'Save to History'}</button><button class="pill" id="m3PNG">⤓ PNG</button><button class="pill" id="m3PDF">⤓ Dimension sheet PDF</button><button class="pill" id="m3OBJ">⤓ OBJ</button><button class="pill" id="m3STL">⤓ STL</button><button class="pill" id="m3GLB">⤓ GLB</button><button class="pill" id="m3Glass">🪟 Use as stained glass size</button></div></div>`;
+    ${actBar({ save: 'm3Save', saved: !!saved, exports: [['m3PDF', '⤓ Dimension sheet PDF'], ['m3PNG', '⤓ Image (PNG)'], ['m3OBJ', '⤓ 3D model (OBJ)'], ['m3STL', '⤓ 3D print (STL)'], ['m3GLB', '⤓ 3D model (GLB)']], extra: '<button class="pill" id="m3Glass">🪟 Use as stained-glass size</button>' })}</div>`;
   const mks = []; let viewer = null;
   const host = $('#m3Views', out);
   st.views.forEach((v, i) => { const h = document.createElement('div'); h.innerHTML = `<h3>${VIEWS3D[v.view][0]} view</h3>`; host.appendChild(h); mks[i] = markerCanvas(h, v.image, v.lines, done => { if (!st.manual) recompute(); if (done) refreshModel(); }); });
@@ -240,7 +240,7 @@ function measureFileOpen(out, saved) {
         <div class="row gap" style="margin-top:6px"><button class="pill" data-vw="iso">3/4</button><button class="pill" data-vw="front">Front</button><button class="pill" data-vw="side">Side</button><button class="pill" data-vw="top">Top</button><label class="small"><input type="checkbox" id="mfWire"> Wireframe</label></div>
         <div class="row gap" style="margin-top:6px"><button class="pill" id="mfPt" aria-pressed="false">📍 Measure 2 points</button><button class="pill" id="mfScale" aria-pressed="false">📏 Set scale</button></div>
         <p class="small muted" id="mfPickHelp"></p><div id="mfMeasures"></div>
-        <div class="export-row" style="margin-top:8px"><button class="primary" id="mfSave">Save to History</button><button class="pill" id="mfPNG">⤓ PNG</button><button class="pill" id="mfPDF">⤓ Dimension sheet PDF</button><button class="pill" id="mfOBJ">⤓ OBJ</button><button class="pill" id="mfSTL">⤓ STL</button><button class="pill" id="mfGLB">⤓ GLB</button><button class="pill" id="mfGlass">🪟 Use as stained glass size</button></div></div>`;
+        ${actBar({ save: 'mfSave', saved: false, exports: [['mfPDF', '⤓ Dimension sheet PDF'], ['mfPNG', '⤓ Image (PNG)'], ['mfOBJ', '⤓ 3D model (OBJ)'], ['mfSTL', '⤓ 3D print (STL)'], ['mfGLB', '⤓ 3D model (GLB)']], extra: '<button class="pill" id="mfGlass">🪟 Use as stained-glass size</button>' })}</div>`;
       let mode = null; const help = $('#mfPickHelp', out);
       const viewer = M.createViewer($('#mfViewer', out), { onPick: (n, mm) => {
         if (n < 2) { help.textContent = mode === 'scale' ? 'Now tap the second point of the known length.' : 'Tap the second point.'; return; }

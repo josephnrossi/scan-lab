@@ -65,7 +65,7 @@ async function compareOpen(out, { a, b, scans = [null, null], saved, hint = '' }
     <p class="small" id="cmpStat"></p></div>
   <div class="card" id="cmpDims" ${st.dims && st.dims.length ? '' : 'hidden'}></div>
   <div class="card" id="cmpGrok"></div>
-  <div class="card"><div class="row gap wrap"><button class="primary" id="cmpSave">${saved ? 'Saved ✓' : 'Save to History'}</button><button class="pill" id="cmpPNG">⤓ Image</button></div>
+  <div class="card">${actBar({ save: 'cmpSave', saved: !!saved, exports: [['cmpPNG', '⤓ Image (PNG)']] })}
     <p class="disclaimer">Difference highlighting is on-device and also reacts to glare, shadows and background. Grok’s description is an AI visual estimate, not a lab measurement.</p></div>`;
   const c = $('#cmpCanvas', out), g = c.getContext('2d'); let alignOn = true;
   const T = () => alignOn && st.align ? st.align : { s: 1, r: 0, tx: 0, ty: 0 };

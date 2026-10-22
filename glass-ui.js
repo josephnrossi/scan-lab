@@ -1,6 +1,6 @@
 /* Scan Lab — Stained Glass mode UI */
 const GLASS_PREFILL = 'glassPrefill';
-const GLASS_VIEWS = [['original', 'Original'], ['pattern', 'Pattern'], ['overlay', 'Overlay'], ['side', 'Side by side'], ['cut', 'Cut lines']];
+const GLASS_VIEWS = [['pattern', 'Pattern'], ['side', 'Side by side'], ['original', 'Original'], ['overlay', 'Overlay'], ['cut', 'Cut lines']], GLASS_MAIN_VIEWS = ['pattern', 'side', 'original'];
 function svgFit(s) { return s.replace(/width="[^"]+in" height="[^"]+in"/, 'width="100%" preserveAspectRatio="xMidYMid meet"'); }
 /* render pattern SVG → JPEG data URL (for the recognisability check) */
 async function glassRenderJPEG(P, max = 900) {
@@ -23,15 +23,19 @@ async function glassOpen(out, { image, saved } = {}) {
   const cm = () => o.unit === 'cm', toU = v => cm() ? r1(v * 2.54) : r2(v), fromU = v => cm() ? v / 2.54 : v;
   out.innerHTML = `<div class="card">
     <div class="res-head"><h2>Stained-glass pattern</h2><span class="badge" id="gDiffBadge"></span></div>
-    <p class="muted small" id="gIntro"></p>
+    <p class="tip small" id="gTip" hidden>Tip: drag <b>Detail</b> for fewer or more pieces, and use <b>Side by side</b> to compare with your photo. <button class="link" id="gTipX">Got it</button></p>
     <div class="glass-preview" id="gPrev"></div>
-    <div class="seg seg-grid" role="group" aria-label="View" style="margin-top:8px">${GLASS_VIEWS.map(([k, l]) => `<button data-pv="${k}" aria-pressed="${k === 'pattern'}">${l}</button>`).join('')}</div>
-    <div class="row gap wrap" style="margin-top:6px"><div class="seg" role="group" aria-label="Piece colours"><button data-fill="photo" aria-pressed="true">Photo colors</button><button data-fill="glass" aria-pressed="false">Glass colors</button></div></div>
+    <div class="seg seg-grid3" role="group" aria-label="View" style="margin-top:8px">${GLASS_VIEWS.filter(v => GLASS_MAIN_VIEWS.includes(v[0])).map(([k, l]) => `<button data-pv="${k}" aria-pressed="${k === 'pattern'}">${l}</button>`).join('')}</div>
+    <label class="field gdet"><span><span id="gDetL">Detail</span> <b id="gDetV"></b></span><input type="range" id="gDet" min="1" max="10" step="1" title="1 = simple, 10 = detailed: more colour zones and smaller pieces"><span class="range-ends muted small"><span>simpler · fewer pieces</span><span>more detail</span></span></label>
+    <p class="small muted" id="gSum"></p>
+    <details class="adv" id="gAdv"><summary>Advanced <span class="muted small">— method, size, views, colors, lines, frame</span></summary>
+    <p class="muted small" id="gIntro"></p>
+    <div class="seg" role="group" aria-label="More views" style="margin-top:4px">${GLASS_VIEWS.filter(v => !GLASS_MAIN_VIEWS.includes(v[0])).map(([k, l]) => `<button data-pv="${k}" aria-pressed="false">${l}</button>`).join('')}</div>
     <label class="field" id="gOpWrap" hidden>Pattern opacity <b id="gOpV"></b><input type="range" id="gOp" min="0" max="100" step="5" value="45"></label>
+    <div class="row gap wrap" style="margin-top:6px"><span class="small muted">Piece colors</span><div class="seg" role="group" aria-label="Piece colours"><button data-fill="photo" aria-pressed="true">Photo colors</button><button data-fill="glass" aria-pressed="false">Glass colors</button></div></div>
     <div id="gSubj" class="small"></div>
     <div class="ctl" style="margin-top:10px">
       <label>Method <select id="gMethod"><option value="trace">Trace photo (faithful)</option><option value="stylized">Stylized (simplified shapes)</option></select></label>
-      <label><span id="gDetL">Detail</span> <b id="gDetV"></b><input type="range" id="gDet" min="1" max="10" step="1" title="1 = simple, 10 = detailed: more colour zones and smaller pieces"><span class="range-ends muted small"><span>simple</span><span>detailed</span></span></label>
       <label><span id="gSimL">Simplify</span> <b id="gSimV"></b><input type="range" id="gSim" min="1" max="10" step="1" title="Higher = coarser regions: fewer, larger pieces (sets the minimum piece size)"></label>
       <label data-sty>Glass colors <b id="gColV"></b><input type="range" id="gCol" min="2" max="10" step="1"></label>
       <label>Lines <select id="gLine">${Object.entries(GLASS_LINES).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('')}</select></label>
@@ -47,15 +51,13 @@ async function glassOpen(out, { image, saved } = {}) {
       <label>Frame width <input type="number" id="gFW" inputmode="decimal" min="0.5" max="4" step="0.25"></label>
       <label>Frame glass <select id="gFG"><option value="">Auto (darkest)</option>${GLASS_PALETTE.map(p => `<option>${p[0]}</option>`).join('')}</select></label>
     </div>
+    </details>
   </div>
-  <div class="card" id="gStats"></div>
-  <div class="card" id="gRecogCard"></div>
   <div class="card"><h3 style="margin-top:0">Glass to buy</h3><div id="gUC"></div><div class="legend" id="gLegend"></div></div>
-  <div class="card"><div class="export-row">
-    <button class="primary" id="gSave">${saved ? 'Saved ✓' : 'Save to History'}</button>
-    <button class="pill" id="gSVG">⤓ SVG</button><button class="pill" id="gPDF">⤓ Pattern PDF</button><button class="pill" id="gCut">⤓ Cut-line PDF</button>
-  </div><p class="muted small">PDFs print at real size (tiled on Letter pages with ⊕ alignment marks when larger). Print at 100% / Actual size. The original photo is saved with the pattern.</p></div>
-  <div class="card" id="gTips"></div>`;
+  ${actBar({ save: 'gSave', saved: !!saved, exports: [['gPDF', '⤓ Pattern PDF'], ['gCut', '⤓ Cut-line PDF'], ['gSVG', '⤓ SVG (for cutting software)']], extra: '<p class="muted small" style="margin:0">PDFs print at real size — choose 100% / Actual size. Your original photo is saved with the pattern.</p>' })}
+  <details class="card adv-card"><summary>Pattern details &amp; rules</summary><div id="gStats"></div></details>
+  <div class="card" id="gRecogCard"></div>
+  <details class="card adv-card"><summary>Beginner build guide — tools and steps</summary><div id="gTips"></div></details>`;
   const prev = $('#gPrev', out); let view = 'pattern', fillMode = 'photo', op = 0.45, t, picking = false;
   const fill = () => { const tr = o.method !== 'stylized';
     $('#gMethod', out).value = tr ? 'trace' : 'stylized'; $$('[data-sty]', out).forEach(e => e.hidden = tr); $('#gFullL', out).hidden = tr && !o.subjectBox;
@@ -80,6 +82,7 @@ async function glassOpen(out, { image, saved } = {}) {
     else if (view === 'side') prev.innerHTML = `<div class="side2"><figure>${pattern({ photo: img, opacity: 0, numbers: false, lines: false })}<figcaption>Original</figcaption></figure><figure>${pattern({ numbers: false })}<figcaption>Pattern</figcaption></figure></div>`;
     else prev.innerHTML = pattern({ cut: view === 'cut' });
     const s = P.stats, U = cm() ? 'cm' : 'in', sq = cm() ? ' cm²' : ' sq in', A = v => cm() ? (v * 6.4516).toFixed(0) : v.toFixed(1);
+    $('#gSum', out).textContent = `${s.pieces} pieces · ${toU(P.widthIn)} × ${toU(P.heightIn)} ${U} — change size and more in Advanced`;
     $('#gDiffBadge', out).innerHTML = `<span class="diff ${s.difficulty === 'Beginner' ? 'beg' : 'int'}">${s.difficulty}</span>`;
     $('#gStats', out).innerHTML = `<div class="res-head"><b>${s.pieces} pieces · ${toU(P.widthIn)} × ${toU(P.heightIn)} ${U}</b><span class="diff ${s.difficulty === 'Beginner' ? 'beg' : 'int'}">${s.difficulty}</span></div>
       ${s.outlineKept != null ? `<p class="small"><b>Outline kept: ${s.outlineKept}%</b> <span class="muted">— share of the subject’s main outlines that became lead lines${P.silhouette && P.silhouette.length ? '; the silhouette is one continuous, slightly bolder lead line' : ''}.</span></p>` : ''}
@@ -94,7 +97,7 @@ async function glassOpen(out, { image, saved } = {}) {
     subjLine(); renderRecog(); renderTips();
   };
   const renderRecog = () => {
-    const c = $('#gRecogCard', out), r = recog;
+    const c = $('#gRecogCard', out), r = recog; c.hidden = !aiHasKey() && !r;
     c.innerHTML = `<div class="res-head"><h3 style="margin:0">Recognizability check</h3>${aiHasKey() ? `<button class="pill" id="gRecog">✨ ${r ? 'Check again' : 'Check with Grok'}</button>` : ''}</div>
       ${r ? `<p class="small">Seen from the pattern alone: <b>${esc(r.depicts)}</b> <span class="muted">(${esc(r.confidence)} confidence)</span></p>
         <p class="small"><span class="badge ${r.match === 'yes' ? 'conf-high' : r.match === 'partly' ? 'conf-medium' : 'conf-low'}">${r.match === 'yes' ? 'Matches the photo' : r.match === 'partly' ? 'Partly matches' : 'Doesn’t match yet'}</span> ${esc(r.explanation)}</p>
@@ -159,10 +162,11 @@ async function glassOpen(out, { image, saved } = {}) {
     } catch (e) { toast(e.message); renderTips(); }
   };
   fill();
+  if (hintOn('glassTip')) { $('#gTip', out).hidden = false; $('#gTipX', out).onclick = () => { hintSeen('glassTip'); $('#gTip', out).hidden = true; }; }
   $('#gMethod', out).onchange = e => { o.method = e.target.value; fill(); if (o.method === 'stylized' && !o.subjectBox) autoFirst(); else rebuild(); };
   $('#gCol', out).oninput = e => { o.colors = +e.target.value; $('#gColV', out).textContent = o.colors; rebuild(); };
   $('#gSim', out).oninput = e => { o.simplicity = +e.target.value; $('#gSimV', out).textContent = o.simplicity; rebuild(); };
-  $('#gDet', out).oninput = e => { o.detail = +e.target.value; $('#gDetV', out).textContent = o.detail; rebuild(); };
+  $('#gDet', out).oninput = e => { hintSeen('glassTip'); $('#gTip', out).hidden = true; o.detail = +e.target.value; $('#gDetV', out).textContent = o.detail; rebuild(); };
   $('#gW', out).onchange = e => { const v = fromU(+e.target.value); if (v >= 2 && v <= 120) { o.widthIn = r2(v); rebuild(); } else fill(); };
   $('#gH', out).onchange = e => { const v = e.target.value === '' ? 0 : fromU(+e.target.value); o.heightIn = v >= 2 && v <= 120 ? r2(v) : 0; rebuild(); };
   $$('[data-u]', out).forEach(b => b.onclick = () => { o.unit = b.dataset.u; fill(); draw(); });

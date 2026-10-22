@@ -23,19 +23,8 @@
 
 <main>
   <section id="view-scan" class="view">
-    <div class="modes" role="tablist" aria-label="Scan mode">
-      <button role="tab" data-mode="auto" aria-selected="true">Auto</button>
-      <button role="tab" data-mode="food">Food</button>
-      <button role="tab" data-mode="materials">Materials</button>
-      <button role="tab" data-mode="defect">Defects</button>
-      <button role="tab" data-mode="count">Count</button>
-      <button role="tab" data-mode="color">Color</button>
-      <button role="tab" data-mode="compare">Compare</button>
-      <button role="tab" data-mode="glass">Glass</button>
-      <button role="tab" data-mode="measure">Measure</button>
-      <button role="tab" data-mode="docs">Docs</button>
-      <button role="tab" data-mode="voice">Voice</button>
-    </div>
+    <button id="btnMode" class="mode-btn" aria-haspopup="dialog" aria-label="Change mode"><span class="mi" id="modeIcon" aria-hidden="true">✨</span><span class="mt"><b id="modeName">Auto</b><span id="modeDesc"></span></span><span class="chev">Change</span></button>
+    <p id="keyNote" class="key-note" hidden>Needs a Grok key for this mode. <button class="link" id="btnKeyNote">Set up (1 min)</button></p>
     <p id="modeHelp" class="mode-help"></p>
 
     <div id="camArea">
@@ -43,16 +32,17 @@
       <video id="cam" playsinline muted autoplay></video>
       <img id="still" alt="Captured photo" hidden>
       <div id="camMsg" class="cam-msg">
+        <div id="welcome" class="welcome" hidden><b>Welcome to Scan Lab</b><ol><li>Choose what to do above. <em>Auto</em> works for most things.</li><li>Take a photo, or pick one from Photos.</li><li>Tap the green button. Results are saved in History.</li></ol></div>
         <p id="camMsgText">Use the camera or pick a photo.</p>
         <button id="btnStartCam" class="primary">Start camera</button>
       </div>
-      <div id="retakeHint" class="retake-hint" hidden>Tap the photo to retake</div>
+      <div id="retakeHint" hidden></div>
     </div>
 
     <div class="cam-controls">
       <button id="btnLibrary" class="pill">🖼 Photos</button>
       <button id="btnShutter" class="shutter" aria-label="Take photo"><span></span></button>
-      <button id="btnScale" class="pill" title="Add a second photo with a hand, coin or card next to it for scale">📏 Scale</button>
+      <button id="btnRetake" class="pill" hidden>↺ Retake</button><span id="ccSpacer" class="cc-spacer"></span>
     </div>
     <input type="file" id="fileLib" accept="image/*" hidden>
     <input type="file" id="fileCam" accept="image/*" capture="environment" hidden>
@@ -65,11 +55,14 @@
       <button id="btnScaleRemove" class="pill">Remove</button>
     </div>
 
+    <div class="dock"><button id="btnAnalyze" class="primary big" disabled>Analyze</button></div>
     <div id="aiInputs">
-      <label class="field"><span>Hint (optional)</span>
-        <input id="hint" type="text" maxlength="200" placeholder="e.g. “this is a 12 oz steak” or “it’s a cast-iron pan”" autocomplete="off"></label>
-      <button id="btnAnalyze" class="primary big" disabled>Analyze</button>
-      <p class="disclaimer" id="aiDisclaimer">AI visual estimate from a photo — not a lab or chemical analysis. Calories, compounds and percentages are educated guesses; a real composition reading needs a spectrometer (for example a pocket near-infrared scanner).</p>
+      <details id="moreOpts" class="more-opts"><summary>More options <span class="muted small">— hint, size reference</span></summary>
+        <label class="field"><span>Hint (optional)</span>
+          <input id="hint" type="text" maxlength="200" placeholder="e.g. “a 12 oz steak” or “a cast-iron pan”" autocomplete="off"></label>
+        <div id="scaleOpt"><button id="btnScale" class="pill" title="Add a second photo with a hand, coin or card next to it for scale">📏 Add a size-reference photo</button> <span class="muted small">a coin, card or hand next to it helps estimate size</span></div>
+      </details>
+      <p class="disclaimer" id="aiDisclaimer">AI estimate from a photo — not a lab test.</p>
     </div>
     </div>
 
@@ -88,6 +81,7 @@
 
   <section id="view-receipts" class="view" hidden>
     <div class="row between">
+      <button class="pill" data-go="history">‹ History</button>
       <h2>Receipts</h2>
       <button id="btnReceiptsCSV" class="pill">⤓ CSV</button>
     </div>
@@ -98,7 +92,7 @@
   <section id="view-history" class="view" hidden>
     <div class="row between">
       <h2>History</h2>
-      <button id="btnExport" class="pill">⤓ Export JSON</button>
+      <span class="row gap"><button class="pill" data-go="receipts" id="btnHistReceipts">🧾 Receipts</button><button id="btnExport" class="pill" title="Back up all scans as a JSON file (no photos, never your key)">⤓ Back up</button></span>
     </div>
     <div id="histList"></div>
   </section>
@@ -107,32 +101,42 @@
 <nav class="tabs" aria-label="Sections">
   <button data-view="scan" aria-current="page"><span>◉</span>Scan</button>
   <button data-view="log"><span>☰</span>Food log</button>
-  <button data-view="receipts"><span>🧾</span>Receipts</button>
   <button data-view="history"><span>⟲</span>History</button>
 </nav>
 
 <div id="sheetSettings" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="setTitle">
   <div class="sheet-body">
     <div class="row between"><h2 id="setTitle">Settings</h2><button class="icon-btn" data-close aria-label="Close">✕</button></div>
-    <p class="muted">Your API key is stored only on this device. It is never put in exports and is sent only to the provider you pick.</p>
+    <p class="muted small">Most modes work without a key. Auto, Food, Materials, Damage check and Receipts &amp; docs use Grok, which needs an xAI API key.</p>
     <div id="pnKeyBox" class="card accent" hidden>
       <p>Found the Grok key you saved in Pencil Notes.</p>
       <button id="btnUsePN" class="primary">Use my Pencil Notes key</button>
     </div>
-    <label class="field"><span>Provider</span>
-      <select id="setProvider"><option value="xai">xAI Grok</option><option value="openai">OpenAI</option><option value="custom">Custom (OpenAI-compatible)</option></select></label>
-    <label class="field"><span>Base URL</span><input id="setBase" type="url" autocomplete="off" spellcheck="false"></label>
-    <label class="field"><span>Model (must accept images)</span><input id="setModel" type="text" autocomplete="off" spellcheck="false"></label>
-    <label class="field"><span>API key</span><input id="setKey" type="password" autocomplete="off" spellcheck="false" placeholder="xai-…"></label>
-    <details><summary class="small muted">Voice: Whisper fallback (optional)</summary><label class="field"><span>OpenAI key used only if xAI speech-to-text fails</span><input id="setWhisper" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…"></label></details>
-    <div class="row gap">
-      <button id="btnSaveAI" class="primary">Save</button>
-      <button id="btnTestAI" class="pill">Test</button>
-      <button id="btnClearAI" class="pill danger">Remove key</button>
-    </div>
-    <p id="testResult" class="test-result" hidden></p>
-    <p class="muted small">Get a key at console.x.ai → API Keys. Never paste it into a chat.</p>
+    <ol class="steps">
+      <li><b>Open the xAI console</b> and sign in.<br><a class="pill linkbtn" id="lnkConsole" href="https://console.x.ai" target="_blank" rel="noopener">Open console.x.ai ↗</a></li>
+      <li><b>Create an API key</b> (API Keys → Create) and copy it.</li>
+      <li><b>Paste it here</b>, then Save. Test checks it works.
+        <label class="field"><span>API key</span><input id="setKey" type="password" autocomplete="off" spellcheck="false" placeholder="xai-…"></label>
+        <div class="row gap"><button id="btnSaveAI" class="primary">Save</button><button id="btnTestAI" class="pill">Test</button></div>
+        <p id="testResult" class="test-result" hidden></p></li>
+    </ol>
+    <p class="muted small">Your key stays on this device. It is never put in exports and is sent only to the provider below. Never paste it into a chat.</p>
+    <details class="adv"><summary>Advanced — other providers, model, voice fallback</summary>
+      <label class="field"><span>Provider</span>
+        <select id="setProvider"><option value="xai">xAI Grok</option><option value="openai">OpenAI</option><option value="custom">Custom (OpenAI-compatible)</option></select></label>
+      <label class="field"><span>Base URL</span><input id="setBase" type="url" autocomplete="off" spellcheck="false"></label>
+      <label class="field"><span>Model (must accept images)</span><input id="setModel" type="text" autocomplete="off" spellcheck="false"></label>
+      <label class="field"><span>Voice: OpenAI Whisper key, used only if xAI speech-to-text fails (optional)</span><input id="setWhisper" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…"></label>
+      <button id="btnClearAI" class="pill danger">Remove key from this device</button>
+    </details>
     <p class="muted small" id="verLine"></p>
+  </div>
+</div>
+
+<div id="sheetMode" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="modeTitle">
+  <div class="sheet-body">
+    <div class="row between"><h2 id="modeTitle">What do you want to do?</h2><button class="icon-btn" data-close aria-label="Close">✕</button></div>
+    <div id="modeGroups"></div>
   </div>
 </div>
 

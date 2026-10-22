@@ -56,8 +56,8 @@ async function colorOpen(out, { image, saved } = {}) {
     <div class="seg" role="group" aria-label="Tap tool" style="margin-top:8px"><button data-ct="sample" aria-pressed="true">Sample color</button><button data-ct="white" aria-pressed="false">White reference</button></div>
     <div class="ctl" style="margin-top:8px"><label>Sample size <b id="colRV"></b><input type="range" id="colR" min="2" max="40" step="1"></label><div id="colWB" class="small" style="align-self:center"></div></div></div>
     <div id="colList"></div>
-    <div class="card"><div class="row gap wrap"><button class="primary" id="colGlass">🪟 Send to Stained Glass</button><button class="pill" id="colSave">Save to History</button><button class="pill" id="colCSV">⇩ CSV</button></div>
-    <p class="disclaimer">All matches are approximate. Camera processing, lighting and your screen all shift color — hold a real paint chip or glass sample next to the object in daylight before buying. Paint values are the screen colors the makers publish (Sherwin-Williams) or community sRGB values (RAL Classic); glass colors are a generic list, not a specific manufacturer. ΔE00: under 2 barely visible, 2–5 close, over 10 clearly different.</p></div>`;
+    <div class="card">${actBar({ save: 'colSave', exports: [['colCSV', '⤓ CSV']], extra: '<button class="pill" id="colGlass">🪟 Use these colors for stained glass</button>' })}
+    <p class="disclaimer">Matches are approximate: camera, light and screens shift color. Check a real paint chip or glass sample in daylight before buying. Paint values are makers’ published screen colors (Sherwin-Williams, RAL); glass is a generic list. ΔE00 under 2 ≈ identical, over 10 clearly different.</p></div>`;
   const c = $('#colCanvas', out), g = c.getContext('2d'); c.width = cv.width; c.height = cv.height;
   const gains = () => st.white ? wbGains(st.white.lin) : null;
   const draw = () => {

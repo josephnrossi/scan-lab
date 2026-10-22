@@ -87,7 +87,7 @@ async function defectRender(out, scan) {
     ${d.prevention.length ? `<h3>Prevention</h3><ul class="tight small">${d.prevention.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}</div>`).join('')
     : '<div class="card"><p>No visible defects found in these photos.</p></div>'}
   ${r.next.length ? `<div class="card"><h3 style="margin-top:0">Next steps</h3><ul class="tight small">${r.next.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>` : ''}
-  <div class="card"><div class="row gap wrap"><button class="primary" id="dPDF">⤓ Report PDF</button><span class="muted small" style="align-self:center">Saved to History</span></div>
+  <div class="card">${actBar({ auto: true, exports: [['dPDF', '⤓ Report PDF']] })}
     ${r.limits ? `<p class="small muted">What photos can’t show: ${esc(r.limits)}</p>` : ''}<p class="disclaimer">${DEFECT_DISCLAIMER}</p></div>`;
   $('#dPDF', out).onclick = async () => shareOrDownload(`defect-report-${todayStr(new Date(scan.at))}.pdf`, (await defectPDF(scan, ann)).blob(), 'application/pdf');
 }

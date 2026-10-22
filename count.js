@@ -56,7 +56,7 @@ async function countOpen(out, { image, saved, hint = '' } = {}) {
     <div class="tap-wrap"><canvas id="cCanvas" aria-label="Photo with numbered markers — tap a marker to remove it, tap empty space to add one"></canvas></div>
     <p class="muted small" id="cNote">Tap a marker to remove it, tap an uncounted item to add one.</p>
     <div class="row gap wrap"><button class="pill" id="cRerun">↻ Count again</button><button class="pill" id="cUndo" disabled>Undo</button></div></div>
-    <div class="card"><div class="row gap wrap"><button class="primary" id="cSave">Save to History</button><button class="pill" id="cCSV">⇩ CSV (all counts)</button></div>
+    <div class="card">${actBar({ save: 'cSave', exports: [['cCSV', '⤓ CSV (all counts)']] })}
     <p class="disclaimer">Counts from a photo can miss stacked, overlapping or hidden items — spread parts out on a plain contrasting surface for the best result, and check the markers.</p></div>`;
   const c = $('#cCanvas', out), g = c.getContext('2d'), sc = Math.min(1, 1280 / Math.max(img.naturalWidth, img.naturalHeight)); c.width = Math.round(img.naturalWidth * sc); c.height = Math.round(img.naturalHeight * sc);
   const hist = [];

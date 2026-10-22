@@ -4,7 +4,7 @@ const BASE = process.env.BASE || 'http://localhost:8765/scan-lab/index.html', PR
 (async () => {
   const b = await webkit.launch(); const ctx = await b.newContext({ ...devices['iPhone 15'], serviceWorkers: 'block' }); const page = await ctx.newPage();
   await page.addInitScript(() => { localStorage.setItem('scanMode', 'glass'); });
-  await page.goto(BASE); await page.waitForSelector('.modes button'); await page.addStyleTag({ content: '.top{visibility:hidden}' });
+  await page.goto(BASE); await page.waitForSelector('#btnMode'); await page.addStyleTag({ content: '.top{visibility:hidden}' });
   for (const n of ['bird', 'tulip', 'cat', 'house']) {
     await page.setInputFiles('#fileLib', path.join(__dirname, 'fixtures/photos', n + '.jpg')); await page.waitForSelector('#still:not([hidden])');
     await page.click('#btnAnalyze');

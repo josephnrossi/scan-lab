@@ -71,7 +71,7 @@ function docsRender(out, scan, unsaved = false) {
     ${scan.pages && scan.pages.length ? `<div class="pages-row">${scan.pages.map((p, i) => `<div class="pg"><img src="${p}" alt="Page ${i + 1}"><em>p${i + 1}</em></div>`).join('')}</div>` : ''}
     ${typeSel}${sec}
     <h3>Text</h3><textarea class="doc-text" id="docText" spellcheck="false" placeholder="Type or paste the text here">${esc(r.text)}</textarea>
-    <div class="export-row" style="margin-top:8px">${unsaved ? '<button class="primary" id="docSave">Save</button>' : ''}<button class="pill" id="docCopy">⧉ Copy text</button><button class="pill" id="docTXT">⤓ TXT</button>${r.doc_type === 'receipt' ? '<button class="pill" id="docCSV">⤓ CSV</button>' : ''}${r.doc_type === 'business_card' ? '<button class="primary" id="docVCF">＋ Contact (.vcf)</button>' : ''}</div>
+    ${actBar({ save: unsaved ? 'docSave' : null, auto: !unsaved, exports: [['docCopy', '⧉ Copy text'], ['docTXT', '⤓ Text file (TXT)'], ...(r.doc_type === 'receipt' ? [['docCSV', '⤓ Spreadsheet (CSV)']] : [])], extra: r.doc_type === 'business_card' ? '<button class="primary" id="docVCF">＋ Add to Contacts (.vcf)</button>' : '' })}
     <p class="muted small">${r.manual ? 'Saved on this device.' : 'Extracted by Grok from the photo — check numbers before relying on them.'}</p></div>`;
   $('#docType', out).onchange = e => { r.doc_type = e.target.value; save(); docsRender(out, scan, unsaved); };
   $('#docText', out).oninput = e => { r.text = e.target.value; save(); };

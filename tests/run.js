@@ -27,13 +27,16 @@ async function newPage(browser, dev, { key = false, sw = false, pn = null } = {}
   if (dev.type === webkit) await page.addInitScript(camMock);
   await page.addInitScript(([k, pn]) => { window.__noShare = true; if (k && !localStorage.getItem('scanLabAI')) localStorage.setItem('scanLabAI', JSON.stringify({ provider: 'xai', base: 'https://api.x.ai/v1', model: 'grok-4.7', key: k })); if (pn) localStorage.setItem('assistAI', JSON.stringify(pn)); localStorage.setItem('voiceConsent', localStorage.getItem('voiceConsent') || ''); }, [key ? KEY : '', pn]);
   const mock = await installMocks(page);
-  await page.goto(BASE); await page.waitForSelector('.modes button');
+  await page.goto(BASE); await page.waitForSelector('#btnMode');
+  // v6 hides advanced controls and exports in disclosures: open any closed <details> around an element before acting on it
+  const openUp = sel => page.evaluate(s => { let e; try { e = document.querySelector(s); } catch (_) { return; } let d = e && (e.tagName === 'SUMMARY' ? e.parentElement.parentElement.closest('details') : e.closest('details')); while (d) { d.open = true; d = d.parentElement && d.parentElement.closest('details'); } }, sel).catch(() => {});
+  for (const fn of ['click', 'selectOption', 'check', 'uncheck', 'fill']) { const orig = page[fn].bind(page); page[fn] = async (sel, ...a) => { if (typeof sel === 'string') await openUp(sel); return orig(sel, ...a); }; }
   return { ctx, page, errors, mock };
 }
 const shot = (page, dev, name) => page.screenshot({ path: path.join(SHOTS, `${dev.name}-${name}.png`), fullPage: false });
 const shotEl = (loc, dev, name) => loc.screenshot({ path: path.join(SHOTS, `${dev.name}-${name}.png`) });
-async function photo(page, file, input = '#fileLib') { await page.setInputFiles(input, fx(file)); await page.waitForSelector('#still:not([hidden])'); }
-async function mode(page, m) { await page.click(`[data-mode=${m}]`); }
+async function photo(page, file, input = '#fileLib') { const n = await page.evaluate(() => window.__adds || 0); await page.setInputFiles(input, fx(file)); await page.waitForSelector('#still:not([hidden])'); if (input === '#fileLib') await page.waitForFunction(n => (window.__adds || 0) > n, n, { timeout: 10000 }); }
+async function mode(page, m) { await page.click('#btnMode'); await page.click(`#sheetMode [data-mode=${m}]`); await page.waitForSelector('#sheetMode', { state: 'hidden' }); }
 async function dl(page, sel) { const [d] = await Promise.all([page.waitForEvent('download', { timeout: 20000 }), page.click(sel)]); const p = path.join(TMP, Date.now() + '-' + d.suggestedFilename()); await d.saveAs(p); return { name: d.suggestedFilename(), path: p, buf: fs.readFileSync(p) }; }
 const text = page => page.evaluate(() => document.body.innerText);
 async function skipTap(page) { await page.waitForSelector('#gTapSkip, #gPrev svg [data-piece]', { timeout: 20000 }); const b = await page.$('#gTapSkip'); if (b) await b.click(); }
@@ -47,9 +50,9 @@ T['loads with no errors, manifest, dark theme'] = async ({ page, errors }) => {
   assert(!errors.length, errors.join('; '));
 };
 T['service worker caches shell and works offline'] = { sw: true, fn: async ({ page, ctx }) => {
-  await page.evaluate(() => navigator.serviceWorker.ready); await page.waitForFunction(async () => (await caches.keys()).includes('scan-lab-v5'), null, { timeout: 15000 });
-  const n = await page.evaluate(async () => (await (await caches.open('scan-lab-v5')).keys()).length); assert(n >= 20, 'cached ' + n);
-  await ctx.setOffline(true); await page.reload(); await page.waitForSelector('.modes button'); assert((await page.title()) === 'Scan Lab', 'offline reload'); await ctx.setOffline(false);
+  await page.evaluate(() => navigator.serviceWorker.ready); await page.waitForFunction(async () => (await caches.keys()).includes('scan-lab-v6'), null, { timeout: 15000 });
+  const n = await page.evaluate(async () => (await (await caches.open('scan-lab-v6')).keys()).length); assert(n >= 20, 'cached ' + n);
+  await ctx.setOffline(true); await page.reload(); await page.waitForSelector('#btnMode'); assert((await page.title()) === 'Scan Lab', 'offline reload'); await ctx.setOffline(false);
 } };
 /* ---------- camera ---------- */
 T['live camera preview, capture, tap to retake'] = async ({ page, dev }) => {
@@ -184,8 +187,11 @@ T['glass v5: original kept, Original/Pattern/Overlay/Side views, subject box, co
   assert(P.method === 'trace', 'Trace photo is the default'); assert(P.user, 'user color used in legend'); assert(P.crop && P.crop.length === 4, 'crop kept');
   assert(await page.$eval('#gPrev svg', s => s.querySelector('#lead') && !s.querySelector('image')), 'pattern view: lead lines, no photo');
   assert((await page.textContent('#gStats')).includes('Traced from your photo'), 'trace explained');
-  assert(await page.$eval('#gMethod', e => e.value) === 'trace' && await page.isHidden('#gStyle') && await page.isHidden('#gSmall') && await page.isVisible('#gDet') && await page.isVisible('#gSim'), 'trace controls');
-  assert((await page.textContent('.ctl')).includes('Simplify') && (await page.textContent('.ctl')).includes('detailed'), 'Detail (simple ↔ detailed) + Simplify');
+  // v6: only Detail is shown by default; Simplify, Method (Stylized), colours, extra views etc. live under Advanced
+  assert(await page.isVisible('#gDet') && await page.isHidden('#gSim') && await page.isHidden('#gMethod') && await page.isHidden('[data-fill=glass]') && await page.isHidden('[data-pv=overlay]') && await page.isVisible('[data-pv=side]') && await page.isVisible('[data-pv=original]'), 'v6 default: Detail + Pattern/Side by side/Original only');
+  assert(!(await page.$eval('#gAdv', d => d.open)), 'Advanced starts closed'); await page.$eval('#gAdv summary', e => e.click());
+  assert(await page.$eval('#gMethod', e => e.value) === 'trace' && await page.isHidden('#gStyle') && await page.isHidden('#gSmall') && await page.isVisible('#gSim'), 'trace controls in Advanced');
+  assert((await page.textContent('#result')).includes('Simplify') && (await page.textContent('#result')).includes('more detail'), 'Detail (simpler ↔ more detail) + Simplify');
   await page.click('[data-pv=original]'); assert(await page.$eval('#gPrev svg', s => !!s.querySelector('image') && !s.querySelector('#lead')), 'original view shows photo');
   await page.click('[data-pv=overlay]'); assert(await page.isVisible('#gOp'), 'opacity slider'); await page.$eval('#gOp', e => { e.value = 80; e.dispatchEvent(new Event('input')); });
   assert(await page.$eval('#gPrev svg', s => !!s.querySelector('image') && !!s.querySelector('#lead') && /0\.8/.test(s.innerHTML)), 'overlay = photo + lines at 80%');
@@ -205,7 +211,7 @@ T['glass v5: no tap step; a small subject in a busy scene is zoomed automaticall
   assert(!(await page.$('#gTapWrap')), 'no tap needed');
   const P = await page.evaluate(() => { const P = window.__glass(); return { box: P.settings.subjectBox, crop: P.crop, method: P.settings.method }; });
   assert(P.method === 'trace', 'trace'); assert(P.box[0] > 0.4 && P.box[2] < 0.65 && P.box[1] > 0.2 && P.box[3] < 0.65, 'auto box around the robin ' + P.box); assert(P.crop[2] < 0.5, 'zoomed to subject ' + P.crop);
-  assert(await page.isVisible('#gFull'), '“Keep full scene” offered'); await page.check('#gFull'); await page.waitForFunction(() => window.__glass().crop[2] > 0.95 && !document.querySelector('#gPrev').classList.contains('busy'), null, { timeout: 30000 });
+  await page.evaluate(() => { document.querySelector('#gAdv').open = true; }); assert(await page.isVisible('#gFull'), '“Keep full scene” offered in Advanced'); await page.check('#gFull'); await page.waitForFunction(() => window.__glass().crop[2] > 0.95 && !document.querySelector('#gPrev').classList.contains('busy'), null, { timeout: 30000 });
   // cat: whole photo traced straight away (no tap), side by side with the original
   await page.click('[data-view=scan]'); await page.evaluate(() => { S.photos = []; }); await photo(page, 'photos/cat.jpg'); await page.click('#btnAnalyze'); await page.waitForSelector('#gPrev svg [data-piece]', { timeout: 30000 });
   assert(!(await page.$('#gTapWrap')), 'no tap step for the cat'); const C = await page.evaluate(() => { const P = window.__glass(); return { box: P.settings.subjectBox, n: P.stats.pieces, blue: P.pieces.filter(p => p.src && p.src[2] > p.src[0] + 25 && p.src[1] > p.src[0] + 15).length }; });
@@ -240,7 +246,7 @@ T['glass UI: live preview, legend, difficulty, exports, save'] = async ({ page, 
   await page.click('#gSave'); await page.click('[data-view=history]'); await page.waitForSelector('.hist-item >> text=Stained glass');
 };
 T['glass UI: Grok tips are optional'] = { key: true, fn: async ({ page }) => {
-  await mode(page, 'glass'); await photo(page, 'flower.jpg'); await page.click('#btnAnalyze'); await skipTap(page); await page.waitForSelector('#gGrok'); await page.click('#gGrok'); await page.waitForSelector('#gTips >> text=Merge the small dark specks');
+  await mode(page, 'glass'); await photo(page, 'flower.jpg'); await page.click('#btnAnalyze'); await skipTap(page); await page.waitForSelector('#gGrok', { state: 'attached' }); await page.click('#gGrok'); await page.waitForSelector('#gTips >> text=Merge the small dark specks');
 } };
 /* ---------- measure ---------- */
 async function dragNorm(page, sel, from, to) { await page.locator(sel).scrollIntoViewIfNeeded(); const b = await page.locator(sel).boundingBox(); await page.mouse.move(b.x + from[0] * b.width, b.y + from[1] * b.height); await page.mouse.down(); await page.mouse.move(b.x + to[0] * b.width, b.y + to[1] * b.height, { steps: 6 }); await page.mouse.up(); }
@@ -252,7 +258,7 @@ T['measure flat: drag points with reference → inches & cm, use as glass size']
   await dragNorm(page, c, [0.65, 0.2], [0.5, 300 / 2000]); await dragNorm(page, c, [0.65, 0.7], [0.5, 900 / 2000]);
   const st = await page.evaluate(() => window.__measure.lines.map(l => l.mm)); near(st[1], 100, 2, 'A mm'); near(st[2], 60, 1.5, 'B mm');
   assert((await page.textContent('[data-len=a]')).includes('cm'), 'in+cm'); await shotEl(page.locator('#result'), dev, '10-measure-flat');
-  await page.click('#mGlass'); await page.waitForSelector('#gW'); near(+await page.inputValue('#gW'), 4, 0.01, 'glass width prefilled (3.94→4 in)');
+  await page.click('#mGlass'); await page.waitForSelector('#gW', { state: 'attached' }); near(+await page.inputValue('#gW'), 4, 0.01, 'glass width prefilled (3.94→4 in)');
 };
 T['measure flat: Grok auto-detects the reference'] = { key: true, fn: async ({ page }) => {
   await mode(page, 'measure'); await page.click('[data-ms=flat]'); await photo(page, 'measure.jpg'); await page.click('#btnAnalyze'); await page.selectOption('#mRef', 'card'); await page.click('#mGrok'); await page.waitForSelector('#mGrokOut >> text=Red block');
@@ -313,7 +319,7 @@ T['docs: receipt extraction, enhance/crop, CSV, receipts by month'] = { key: tru
   const csv = await dl(page, '#docCSV'); assert(csv.buf.toString().includes('Home Depot,2026-10-14,Screws,1,7.47,USD') && csv.buf.toString().includes('TOTAL,,12.25'), 'csv ' + csv.buf);
   const txt = await dl(page, '#docTXT'); assert(txt.buf.toString().includes('Total: 12.25'), 'txt');
   await page.fill('[data-f="receipt.total"]', '13.00'); await page.dispatchEvent('[data-f="receipt.total"]', 'input'); await page.waitForTimeout(500);
-  await page.click('[data-view=receipts]'); await page.waitForSelector('[data-month="2026-10"]'); assert((await page.textContent('[data-month="2026-10"]')).includes('13.00'), 'month total');
+  await page.click('[data-view=history]'); await page.click('#btnHistReceipts'); await page.waitForSelector('[data-month="2026-10"]'); assert((await page.textContent('[data-month="2026-10"]')).includes('13.00'), 'month total');
   await shot(page, dev, '14-receipts-list'); const all = await dl(page, '#btnReceiptsCSV'); assert(all.buf.toString().split('\n').length === 2, 'receipts csv');
 } };
 T['docs: business card → VCF contact'] = { key: true, fn: async ({ page, mock }) => {
@@ -323,7 +329,7 @@ T['docs: business card → VCF contact'] = { key: true, fn: async ({ page, mock 
 T['docs: no key → image kept, manual entry, saved receipt'] = async ({ page, dev }) => {
   await mode(page, 'docs'); await photo(page, 'receipt.jpg'); await page.click('#btnAnalyze'); await page.waitForSelector('#docSave');
   await page.fill('[data-f="receipt.merchant"]', 'Corner Store'); await page.dispatchEvent('[data-f="receipt.merchant"]', 'input'); await page.fill('[data-f="receipt.total"]', '4.50'); await page.dispatchEvent('[data-f="receipt.total"]', 'input'); await page.fill('#docText', 'Milk 4.50'); await page.dispatchEvent('#docText', 'input');
-  await shotEl(page.locator('#result'), dev, '15-docs-manual'); await page.click('#docSave'); await page.click('[data-view=receipts]'); await page.waitForSelector('#rcptList >> text=Corner Store');
+  await shotEl(page.locator('#result'), dev, '15-docs-manual'); await page.click('#docSave'); await page.click('[data-view=history]'); await page.click('#btnHistReceipts'); await page.waitForSelector('#rcptList >> text=Corner Store');
   assert(await page.evaluate(async () => (await DB.all('scans'))[0].image.startsWith('data:image/jpeg')), 'image saved');
 };
 /* ---------- voice ---------- */
@@ -432,19 +438,66 @@ T['compare: two saved Measure scans compare by dimensions'] = async ({ page, dev
 const phoneOnly = 'iphone';
 async function layoutCheck(page, where) {
   const r = await page.evaluate(() => {
-    const W = innerWidth, over = [...document.querySelectorAll('body *')].filter(e => { if (!e.offsetParent && getComputedStyle(e).position !== 'fixed') return false; const b = e.getBoundingClientRect(); return b.width && (b.right > W + 1 || b.left < -1) && !e.closest('.pages-row,.hscroll,svg'); }).map(e => e.tagName + (e.id ? '#' + e.id : '') + '.' + e.className).slice(0, 4);
+    const W = innerWidth, shut = e => { const d = e.closest('details:not([open])'); if (!d) return false; const sm = e.closest('summary'); return !(sm && sm.parentElement === d) || shut(d.parentElement || document.body); }, over = [...document.querySelectorAll('body *')].filter(e => { if (shut(e)) return false; if (!e.offsetParent && getComputedStyle(e).position !== 'fixed') return false; const b = e.getBoundingClientRect(); return b.width && (b.right > W + 1 || b.left < -1) && !e.closest('.pages-row,.hscroll,svg'); }).map(e => e.tagName + (e.id ? '#' + e.id : '') + '.' + e.className).slice(0, 4);
     const small = [...document.querySelectorAll('button,select,input:not([type=range]):not([type=checkbox]):not([type=file]):not([type=radio]),[role=tab]')].filter(b => b.offsetParent && b.getBoundingClientRect().height < 43.5 && !b.closest('.pages-row')).map(b => (b.id || b.textContent.trim()).slice(0, 20)).slice(0, 5);
     return { sw: document.documentElement.scrollWidth, W, over, small };
   });
   assert(r.sw <= r.W, `${where}: horizontal overflow ${r.sw}>${r.W} ${r.over.join(' ')}`); assert(!r.over.length, `${where}: off-screen ${r.over.join(' ')}`); assert(!r.small.length, `${where}: <44pt ${r.small.join('|')}`);
 }
+/* ---------- v6: streamlined UI ---------- */
+// hit-test: element is on screen horizontally, not under the header or tab bar, and is what a tap at its centre lands on
+const hitTest = (page, sels, { scroll = false } = {}) => page.evaluate(([sels, scroll]) => sels.map(sel => { const e = document.querySelector(sel); if (!e) return sel + ': missing';
+  if (scroll) e.scrollIntoView({ block: 'center' }); const r = e.getBoundingClientRect(), W = innerWidth, top = document.querySelector('.top').getBoundingClientRect().bottom, tabs = document.querySelector('.tabs').getBoundingClientRect().top;
+  if (!r.width) return sel + ': hidden'; if (r.left < -0.5 || r.right > W + 0.5) return sel + ': off-screen sideways ' + Math.round(r.left) + '–' + Math.round(r.right);
+  if (r.top < top - 1 || r.bottom > tabs + 1) return sel + `: not fully visible (${Math.round(r.top)}–${Math.round(r.bottom)}, visible ${Math.round(top)}–${Math.round(tabs)})`;
+  if (r.height < 43.5 && !/range/.test(e.type)) return sel + ': under 44pt ' + Math.round(r.height);
+  const h = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return h && (h === e || e.contains(h) || h.contains(e) && h.tagName === 'LABEL') ? null : sel + ': covered by ' + (h && (h.id || h.className || h.tagName));
+}).filter(Boolean).concat(document.documentElement.scrollWidth > innerWidth + 1 ? ['page scrolls sideways'] : []), [sels, scroll]);
+T['v6: one mode picker — grouped, plain names with icons, Auto recommended first; welcome hint shown once'] = async ({ page, dev }) => {
+  assert(await page.isVisible('#welcome'), 'first-run welcome'); assert(await page.textContent('#modeName') === 'Auto', 'Auto default');
+  await shot(page, dev, 'v6-home');
+  await page.click('#btnMode'); await page.waitForSelector('#sheetMode:not([hidden])');
+  const g = await page.evaluate(() => ({ heads: [...document.querySelectorAll('#modeGroups .mg-h')].map(h => h.textContent), tiles: [...document.querySelectorAll('#modeGroups [data-mode]')].map(b => [b.dataset.mode, b.querySelector('b').textContent, b.querySelector('.mi').textContent.trim().length > 0]) }));
+  assert(g.heads.length === 4 && g.heads[0] === 'Identify', 'groups ' + g.heads); assert(g.tiles.length === 11 && g.tiles[0][0] === 'auto' && /Recommended/.test(g.tiles[0][1]) && g.tiles.every(t => t[2]), 'tiles ' + JSON.stringify(g.tiles));
+  assert(g.tiles.some(t => t[1] === 'Damage check') && g.tiles.some(t => t[1] === 'Receipts & docs') && g.tiles.some(t => t[1] === 'Stained glass'), 'plain names');
+  await shot(page, dev, 'v6-mode-picker');
+  await page.click('#sheetMode [data-mode=count]'); assert(await page.textContent('#modeName') === 'Count items', 'picked'); assert(await page.evaluate(() => localStorage.getItem('scanMode')) === 'count', 'remembered');
+  await photo(page, 'count.jpg'); assert(await page.isHidden('#welcome'), 'welcome dismissed after first photo');
+  await page.reload(); await page.waitForSelector('#btnMode'); assert(await page.isHidden('#welcome') && await page.textContent('#modeName') === 'Count items', 'welcome only once; mode kept');
+};
+T['v6: guided key setup — console.x.ai link, one field, advanced hidden; AI modes say they need a key before you shoot'] = async ({ page, dev }) => {
+  await mode(page, 'food'); assert(await page.isVisible('#keyNote'), 'key note in an AI mode'); await mode(page, 'glass'); assert(await page.isHidden('#keyNote'), 'no key note on-device');
+  await mode(page, 'food'); await page.click('#btnKeyNote'); await page.waitForSelector('#sheetSettings:not([hidden])');
+  const st = await page.evaluate(() => ({ href: document.querySelector('#lnkConsole').href, tgt: document.querySelector('#lnkConsole').target, steps: document.querySelectorAll('#sheetSettings ol.steps > li').length, advOpen: document.querySelector('#sheetSettings details.adv').open, rm: !document.querySelector('#btnClearAI').hidden }));
+  st.baseVis = await page.isVisible('#setBase');
+  assert(/^https:\/\/console\.x\.ai\/?$/.test(st.href) && st.tgt === '_blank', 'console link ' + st.href); assert(st.steps === 3, '3 steps'); assert(!st.advOpen && !st.baseVis, 'provider/base/model under Advanced'); assert(!st.rm, 'no Remove key without a key');
+  const ht = await hitTest(page, ['#lnkConsole', '#setKey', '#btnSaveAI', '#btnTestAI'], { scroll: true }); assert(!ht.length, 'settings tappable: ' + ht.join('; '));
+  await shot(page, dev, 'v6-settings');
+  await page.fill('#setKey', 'xai-TESTKEY-1234567890'); await page.click('#btnSaveAI'); await page.waitForSelector('#sheetSettings', { state: 'hidden' }); assert(await page.isHidden('#keyNote'), 'key note gone once a key is saved');
+};
+T['v6: same flow in every photo mode — main button docked after a photo, Retake, one action bar (Save · Share/export · New photo)'] = { key: true, fn: async ({ page, dev }) => {
+  const F = { auto: 'food.jpg', food: 'food.jpg', materials: 'object.jpg', defect: 'object.jpg', count: 'count.jpg', color: 'color.png', glass: 'flower.jpg', docs: 'receipt.jpg', compare: ['cmp-before.jpg', 'cmp-after.jpg'] };
+  for (const [m, f] of Object.entries(F)) {
+    await mode(page, m); await page.evaluate(() => scrollTo(0, 0)); assert(await page.isHidden('.dock'), m + ': no main button before a photo');
+    for (const x of [].concat(f)) await photo(page, x); await page.evaluate(() => scrollTo(0, 0)); await page.waitForTimeout(100);
+    const ht = await hitTest(page, ['#btnMode', '#btnLibrary', '#btnShutter', '#btnRetake', '#btnAnalyze']); assert(!ht.length, m + ' after photo, no scrolling: ' + ht.join('; '));
+    await page.click('#btnAnalyze'); if (m === 'defect') { await page.waitForSelector('#dRun'); await page.click('#dRun'); } await page.waitForSelector('#result [data-actbar]', { timeout: 30000 }).catch(e => { throw new Error(m + ': ' + e.message.split('\n')[0]); });
+    const bar = await page.evaluate(() => { const b = document.querySelector('#result [data-actbar]'); return { n: document.querySelectorAll('#result [data-actbar]').length, save: !!b.querySelector('button.primary[id$=Save], .saved-note'), exp: b.querySelectorAll('.act-menu button').length, np: !!b.querySelector('[data-newphoto]') }; });
+    assert(bar.n === 1 && bar.save && bar.np, m + ': one action bar with save + new photo ' + JSON.stringify(bar));
+    const hb = await hitTest(page, ['#result [data-actbar] [data-newphoto]', '#result [data-actbar] .act-more > summary, #result [data-actbar] .primary, #result [data-actbar] .saved-note'], { scroll: true }); assert(!hb.length, m + ' action bar tappable: ' + hb.join('; '));
+    if (m === 'glass') { const hg = await hitTest(page, ['#gDet', '[data-pv=side]', '[data-pv=original]', '#gAdv > summary'], { scroll: true }); assert(!hg.length, 'glass controls: ' + hg.join('; ')); }
+    await page.click('#result [data-newphoto]'); await page.waitForFunction(() => !S.photos.length && !document.querySelector('#result [data-actbar]'), null, { timeout: 5000 });
+    assert(await page.evaluate(() => scrollY) === 0, m + ': New photo returns to the camera');
+  }
+} };
 T['iPhone: every mode fits portrait, no overflow, 44pt, safe areas, one-handed shutter'] = { only: phoneOnly, fn: async ({ page, dev }) => {
   const css = await page.evaluate(() => [...document.styleSheets].flatMap(s => [...s.cssRules].map(r => r.cssText)).join('\n'));
   for (const side of ['top', 'bottom', 'left', 'right']) assert(css.includes('safe-area-inset-' + side), 'safe-area ' + side);
   assert((await page.getAttribute('meta[name=viewport]', 'content')).includes('viewport-fit=cover'), 'viewport-fit');
-  const mb = await page.$$eval('.modes button', bs => bs.map(b => { const r = b.getBoundingClientRect(); return [r.left, r.right, r.height, b.scrollWidth <= b.clientWidth + 1, innerWidth]; }));
-  assert(mb.every(([l, r, h, fit, W]) => l >= 0 && r <= W && h >= 44 && fit), 'mode switcher fits ' + JSON.stringify(mb));
-  const modes = await page.$$eval('.modes button', bs => bs.map(b => b.dataset.mode));
+  await page.click('#btnMode'); await page.waitForSelector('#sheetMode:not([hidden])');
+  const mb = await page.$$eval('#sheetMode [data-mode]', bs => bs.map(b => { const r = b.getBoundingClientRect(); return [r.left, r.right, r.height, b.scrollWidth <= b.clientWidth + 1, innerWidth]; }));
+  assert(mb.length === 11 && mb.every(([l, r, h, fit, W]) => l >= 0 && r <= W && h >= 44 && fit), 'mode picker fits ' + JSON.stringify(mb));
+  const modes = await page.$$eval('#sheetMode [data-mode]', bs => bs.map(b => b.dataset.mode)); await page.click('#sheetMode [data-close]');
   let i = 0;
   for (const m of modes) {
     if (m === 'voice') await page.evaluate(() => localStorage.setItem('voiceConsent', '1'));
