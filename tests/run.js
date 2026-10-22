@@ -47,8 +47,8 @@ T['loads with no errors, manifest, dark theme'] = async ({ page, errors }) => {
   assert(!errors.length, errors.join('; '));
 };
 T['service worker caches shell and works offline'] = { sw: true, fn: async ({ page, ctx }) => {
-  await page.evaluate(() => navigator.serviceWorker.ready); await page.waitForFunction(async () => (await caches.keys()).includes('scan-lab-v4'), null, { timeout: 15000 });
-  const n = await page.evaluate(async () => (await (await caches.open('scan-lab-v4')).keys()).length); assert(n >= 20, 'cached ' + n);
+  await page.evaluate(() => navigator.serviceWorker.ready); await page.waitForFunction(async () => (await caches.keys()).includes('scan-lab-v5'), null, { timeout: 15000 });
+  const n = await page.evaluate(async () => (await (await caches.open('scan-lab-v5')).keys()).length); assert(n >= 20, 'cached ' + n);
   await ctx.setOffline(true); await page.reload(); await page.waitForSelector('.modes button'); assert((await page.title()) === 'Scan Lab', 'offline reload'); await ctx.setOffline(false);
 } };
 /* ---------- camera ---------- */
@@ -129,8 +129,11 @@ T['glass: k-means quantization finds the true colors'] = async ({ page }) => {
 const buildFlower = (o) => async () => { const im = await loadImg(document.querySelector('#__fx').src); const P = glassBuild(await glassImageData(im, o), o); window.__P = P; return true; };
 async function flower(page, o) { await page.evaluate(src => { const i = new Image(); i.id = '__fx'; i.src = src; i.hidden = true; document.body.appendChild(i); return new Promise(r => i.onload = r); }, 'data:image/jpeg;base64,' + fs.readFileSync(fx('flower.jpg')).toString('base64')); return page.evaluate(async o => { const im = document.querySelector('#__fx'); const P = glassBuild(await glassImageData(im, o), o); window.__P = P; return { n: P.pieces.length, stats: P.stats, W: P.gridW, H: P.gridH, ppi: P.ppi, area: P.pieces.reduce((a, p) => a + p.poly.reduce((s, r) => s + Math.abs(ringArea(r)) * (r === p.poly[0] ? 1 : -1), 0), 0), rings: P.pieces.map(p => p.poly.length), minArea: Math.min(...P.pieces.filter(p => !p.frame).map(p => p.areaIn)), dZ: P.pieces.every(p => p.segs.every(s => s[s.length - 1][0] === 'Z' && s[0][0] === 'M')), frames: P.pieces.filter(p => p.frame).length, minW: Math.min(...P.pieces.filter(p => !p.frame).map(p => p.widthIn)) }; }, o); }
 T['glass: closed gap-free paths, min piece size, no enclosed pieces'] = async ({ page }) => {
-  for (const o of [{ colors: 6, simplicity: 3, widthIn: 12 }, { colors: 8, simplicity: 1, widthIn: 10, frame: false }, { colors: 4, simplicity: 9, widthIn: 16 }]) {
+  for (const o of [{ colors: 6, simplicity: 3, widthIn: 12 }, { colors: 8, simplicity: 1, widthIn: 10, frame: false }, { colors: 4, simplicity: 9, widthIn: 16 }, { method: 'stylized', colors: 6, simplicity: 3, widthIn: 12 }, { method: 'stylized', colors: 8, simplicity: 1, widthIn: 10, frame: false }]) {
     const r = await flower(page, o);
+    if (o.method !== 'stylized') { // trace: everything under the minimum was merged, except small but strongly distinct features kept as flagged "advanced" pieces (≥ 35% of the minimum)
+      assert(r.dZ, 'every subpath M…Z'); near(r.area, r.W * r.H, r.W * r.H * 0.002, 'pieces tile the panel with no gaps/overlaps'); assert(r.rings.every(n => n === 1), 'no piece encloses another: ' + r.rings.join(','));
+      assert(r.minArea >= r.stats.minAreaIn * 0.35, 'trace min piece size ' + r.minArea + ' vs ' + r.stats.minAreaIn); assert(r.frames === (o.frame === false ? 0 : 4), 'frame pieces ' + r.frames); continue; }
     assert(r.dZ, 'every subpath M…Z'); near(r.area, r.W * r.H, r.W * r.H * 0.002, 'pieces tile the panel with no gaps/overlaps');
     assert(r.rings.every(n => n === 1), 'no piece encloses another: ' + r.rings.join(','));
     assert(r.minArea >= r.stats.minAreaIn * 0.999 || r.stats.flagged.small.length, 'min piece size ' + r.minArea + ' < ' + r.stats.minAreaIn);
@@ -155,24 +158,34 @@ T['glass: SVG and PDF export at real scale, tiled with marks'] = async ({ page }
   // single page when it fits
   await flower(page, { colors: 5, simplicity: 5, widthIn: 6 }); const m = await page.evaluate(() => glassPDF(window.__P).meta); assert(m.pages === 2, 'fits on one tile + overview');
 };
-T['glass v3: lead lines follow the photo — keeps more subject outline than v2, still buildable'] = { only: d => d.name !== 'webkit-ipadpro11', fn: async ({ page, dev }) => {
-  await page.addScriptTag({ path: path.join(__dirname, 'glass-metric.js') }); const legacy = fs.readFileSync(fx('glass-v2-legacy.js'), 'utf8'), rows = [];
-  for (const n of ['bird', 'tulip', 'cat', 'house']) {
-    const r = await page.evaluate(async ([src, legacy]) => { const o = { ...glassDefaults(), zoom: false }, im = await glassImageData(src, o), L = new Function(legacy + '\nreturn { glassBuild, glassDefaults };')();
-      const Pn = glassBuild(im, o), Po = L.glassBuild({ width: im.width, height: im.height, data: im.data, aspect: im.aspect }, { ...L.glassDefaults(), widthIn: o.widthIn });
-      return { n: Pn.pieces.length, o: Po.pieces.length, kn: window.__outlineKept(Pn, im), ko: window.__outlineKept(Po, im), v: Pn.version, src: Pn.pieces.filter(p => !p.frame).every(p => Array.isArray(p.src) && p.src.length === 3), statK: Pn.stats.outlineKept }; }, ['data:image/jpeg;base64,' + fs.readFileSync(fx('photos/' + n + '.jpg')).toString('base64'), legacy]);
-    rows.push(n + ' ' + r.ko + '→' + r.kn + '% (' + r.o + '→' + r.n + ' pc)'); assert(r.v === 2 && r.src && r.statK >= 0, n + ' v2 pattern with photo colors');
-    if (n === 'house') assert(r.statK >= (/chromium/.test(dev.name) ? 55 : 65), 'house: main structural lines (roofline, cornices, window/door frames) kept as lead or came lines ' + r.statK); else assert(r.kn >= r.ko + 4, n + ' outline kept ' + r.ko + '→' + r.kn); assert(r.n <= 45, n + ' piece count stays buildable ' + r.o + '→' + r.n);
+T['glass v5: Trace photo is faithful — low colour error, lead on real edges, cuttable, Detail/Simplify work'] = { only: d => d.name !== 'webkit-ipadpro11', fn: async ({ page, dev }) => {
+  await page.addScriptTag({ path: path.join(__dirname, 'glass-fidelity.js') }); const rows = [];
+  // bird: the auto-detected subject box (a small robin on a busy fence) zooms the trace in
+  const LIM = { cat: { dE: 8, rec: 50, pre: 50 }, bird: { dE: 7, rec: 55, pre: 40, box: [0.459, 0.282, 0.591, 0.539] }, tulip: { dE: 8, rec: 65, pre: 30 }, house: { dE: 14, rec: 45, pre: 70 } };
+  for (const [n, L] of Object.entries(LIM)) {
+    const r = await page.evaluate(async ([src, box]) => { const run = async c => { const o = { ...glassDefaults(), ...c }; if (box) o.subjectBox = box; const im = await glassImageData(src, o), P = glassBuild(im, o), f = await window.__fidelity(P, im, { fill: 'photo' });
+        const pc = P.pieces.filter(p => !p.frame); return { ...f, n: pc.length, min: P.stats.minAreaIn, smallest: P.stats.smallestIn, src: pc.every(p => Array.isArray(p.src) && p.src.length === 3), holes: P.stats.flagged.hole.length, note: (P.notes || []).join(' '), method: P.settings.method }; };
+      return { d: await run({}), s: await run({ method: 'stylized' }), lo: await run({ detail: 2 }), hi: await run({ detail: 10 }), simp: await run({ simplicity: 9 }) }; }, ['data:image/jpeg;base64,' + fs.readFileSync(fx('photos/' + n + '.jpg')).toString('base64'), L.box || null]);
+    const d = r.d; rows.push(`${n} ΔE ${d.dE} (stylized ${r.s.dE}) · edges recall ${d.recall}% precision ${d.precision}% · ${d.n} pc (detail 2→10: ${r.lo.n}→${r.hi.n}, simplify 9: ${r.simp.n})`);
+    assert(d.method === 'trace', n + ' default method is Trace photo');
+    assert(d.dE <= L.dE, n + ' low mean colour error vs photo ' + d.dE); assert(d.dE < r.s.dE * 0.75, n + ' trace much closer to the photo than stylized ' + d.dE + ' vs ' + r.s.dE);
+    assert(d.recall >= L.rec, n + ' lead lines follow the photo’s contours ' + d.recall); assert(d.precision >= L.pre, n + ' lead lines sit on real edges ' + d.precision);
+    assert(d.src, n + ' every piece carries its real average photo colour'); assert(d.holes === 0, n + ' no piece encloses another');
+    assert(d.smallest >= d.min * 0.45, n + ' no confetti: smallest ' + d.smallest + ' vs min ' + d.min); assert(d.n >= 30 && d.n <= 160, n + ' piece count ' + d.n);
+    assert(r.lo.n < d.n && d.n < r.hi.n, n + ' Detail slider: simple → detailed ' + r.lo.n + ' < ' + d.n + ' < ' + r.hi.n); assert(r.simp.n < d.n * 0.85, n + ' Simplify makes regions coarser ' + r.simp.n);
+    assert(/Traced from your photo/.test(d.note), n + ' trace note');
   }
-  console.log('      outline kept (v2→v3): ' + rows.join(', '));
+  console.log('      ' + rows.join('\n      '));
 } };
-T['glass v3: original kept, Original/Pattern/Overlay/Side views, subject box, silhouette, colors from Color match'] = async ({ page, dev }) => {
+T['glass v5: original kept, Original/Pattern/Overlay/Side views, subject box, colors from Color match'] = async ({ page, dev }) => {
   await page.evaluate(() => localStorage.setItem('glassColors', JSON.stringify([{ name: 'Your color 1 (#C0392B)', hex: '#C0392B' }])));
   await mode(page, 'glass'); await photo(page, 'photos/tulip.jpg'); await page.click('#btnAnalyze'); await skipTap(page); await page.waitForSelector('#gPrev svg [data-piece]', { timeout: 30000 });
-  const P = await page.evaluate(() => { const P = window.__glass(); return { sil: (P.silhouette || []).length, subj: P.subject, kept: P.stats.outlineKept, user: P.legend.some(l => /Your color 1/.test(l.glass)), crop: P.crop }; });
-  assert(P.sil > 0 && P.subject !== null, 'silhouette chains ' + P.sil); assert(P.kept > 0, 'outline kept'); assert(P.user, 'user color used in legend'); assert(P.crop && P.crop.length === 4, 'crop kept');
-  assert(await page.$eval('#gPrev svg', s => s.querySelector('#silhouette') && !s.querySelector('image')), 'pattern view: silhouette, no photo');
-  assert((await page.textContent('#gStats')).includes('Outline kept'), 'stat shown');
+  const P = await page.evaluate(() => { const P = window.__glass(); return { method: P.settings.method, user: P.legend.some(l => /Your color 1/.test(l.glass)), crop: P.crop }; });
+  assert(P.method === 'trace', 'Trace photo is the default'); assert(P.user, 'user color used in legend'); assert(P.crop && P.crop.length === 4, 'crop kept');
+  assert(await page.$eval('#gPrev svg', s => s.querySelector('#lead') && !s.querySelector('image')), 'pattern view: lead lines, no photo');
+  assert((await page.textContent('#gStats')).includes('Traced from your photo'), 'trace explained');
+  assert(await page.$eval('#gMethod', e => e.value) === 'trace' && await page.isHidden('#gStyle') && await page.isHidden('#gSmall') && await page.isVisible('#gDet') && await page.isVisible('#gSim'), 'trace controls');
+  assert((await page.textContent('.ctl')).includes('Simplify') && (await page.textContent('.ctl')).includes('detailed'), 'Detail (simple ↔ detailed) + Simplify');
   await page.click('[data-pv=original]'); assert(await page.$eval('#gPrev svg', s => !!s.querySelector('image') && !s.querySelector('#lead')), 'original view shows photo');
   await page.click('[data-pv=overlay]'); assert(await page.isVisible('#gOp'), 'opacity slider'); await page.$eval('#gOp', e => { e.value = 80; e.dispatchEvent(new Event('input')); });
   assert(await page.$eval('#gPrev svg', s => !!s.querySelector('image') && !!s.querySelector('#lead') && /0\.8/.test(s.innerHTML)), 'overlay = photo + lines at 80%');
@@ -186,75 +199,23 @@ T['glass v3: original kept, Original/Pattern/Overlay/Side views, subject box, si
   await page.click('#gSave'); await page.waitForTimeout(300); const s = await page.evaluate(async () => (await DB.all('scans')).find(x => x.kind === 'glass')); assert(s.image && s.image.startsWith('data:image/jpeg') && s.result.version === 2, 'original photo saved with pattern');
   await page.click('#gUCx'); await page.waitForFunction(() => !localStorage.getItem('glassColors'));
 };
-T['glass v4: cat face blind check — 2 distinct pointed ears with inner ears, eyes+pupils, nose, split muzzle, chin, 2–4 stripes, closed silhouette, calm contrasting background'] = async ({ page }) => {
-  const src = 'data:image/jpeg;base64,' + fs.readFileSync(fx('photos/cat.jpg')).toString('base64');
-  for (const q of [0, 0.82]) { // the photo as given and as the app re-encodes it
-    const r = await catPlan(page, q, src);
-    const tag = 'cat q' + q + ': ', parts = r.parts, cnt = n => parts.filter(p => p.part === n).length, one = n => parts.find(p => p.part === n);
-    assert(r.how === 'face', tag + 'face layout used ' + r.how);
-    for (const n of ['earL', 'earR', 'innerL', 'innerR', 'eyeL', 'eyeR', 'nose', 'muzzleL', 'muzzleR', 'chin']) assert(cnt(n) === 1, tag + 'exactly one ' + n + ' piece, got ' + cnt(n));
-    const ears = [['earL', 'innerL'], ['earR', 'innerR']].map(([e, i]) => { const a = one(e), b = one(i), x0 = Math.min(a.x0, b.x0), x1 = Math.max(a.x1, b.x1), y0 = Math.min(a.y0, b.y0), y1 = Math.max(a.y1, b.y1);
-      return { part: e, rim: a, inner: b, ids: [a.id, b.id], x0, x1, y0, y1, cx: (x0 + x1) / 2, fill: (a.pa + b.pa) / ((x1 - x0) * (y1 - y0)) }; }), head = parts.filter(p => p.subj && !/^(ear|inner)/.test(p.part));
-    assert(!ears[0].ids.some(id => parts.find(p => p.id === id).touch.some(t => ears[1].ids.includes(t))), tag + 'the 2 ears are distinct, separate pieces');
-    assert(ears[0].cx < r.midX && ears[1].cx > r.midX && ears[1].cx - ears[0].cx > r.ppi, tag + 'one ear each side ' + ears.map(e => e.cx) + ' mid ' + r.midX);
-    const crown = Math.min(...head.map(p => p.y0));
-    for (const e of ears) { assert(e.y0 < crown - 0.3 * r.ppi, tag + e.part + ' tip stands above the crown ' + e.y0 + ' vs ' + crown);
-      assert(e.fill > 0.3 && e.fill < 0.72, tag + e.part + ' is a triangle (fill of its box ' + e.fill + ')');
-      assert(e.rim.y0 <= e.inner.y0 && e.rim.touch.includes(e.inner.id), tag + e.part + ': the rim holds the pointed tip and wraps the inner ear');
-      for (const p of [e.rim, e.inner]) assert(p.areaIn >= r.minAreaIn * 0.5 && p.widthIn >= r.minWidthIn * 0.99, tag + p.part + ' cuttable ' + p.areaIn + 'in² ' + p.widthIn + 'in vs min ' + r.minAreaIn + 'in² ' + r.minWidthIn + 'in');
-      assert(['Pink', 'Flesh / peach', 'Rose'].includes(e.inner.glass) && e.inner.glass !== e.rim.glass, tag + e.part + ' inner ear in its own pink/light glass ' + e.inner.glass + ' / ' + e.rim.glass); }
-    assert(r.dots.filter(d => ['eyeL', 'eyeR'].some(n => { const e = one(n); return d.cx > e.x0 && d.cx < e.x1 && d.cy > e.y0 && d.cy < e.y1; })).length >= 2, tag + 'a pupil in each eye ' + JSON.stringify(r.dots));
-    const lum = p => 0.3 * p.rgb[0] + 0.59 * p.rgb[1] + 0.11 * p.rgb[2], cheeks = parts.filter(p => /^cheek/.test(p.part));
-    assert(['muzzleL', 'muzzleR', 'chin'].every(n => cheeks.every(c => lum(one(n)) > lum(c))), tag + 'muzzle and chin lighter than the cheeks');
-    assert(one('muzzleL').touch.includes(one('muzzleR').id) && Math.abs((one('muzzleL').x1 + one('muzzleR').x0) / 2 - one('nose').cx) < 0.25 * r.ppi, tag + 'muzzle split left/right under the nose');
-    const stripes = parts.filter(p => /^stripe/.test(p.part)), fur = parts.filter(p => /^(forehead|temple)/.test(p.part));
-    assert(stripes.length >= 2 && stripes.length <= 4, tag + '2–4 forehead stripes ' + stripes.length); assert(stripes.every(s => fur.every(f => lum(s) < lum(f))), tag + 'stripes darker than the forehead fur');
-    assert(r.loops.closed && r.loops.box[1] <= Math.min(...ears.map(e => e.y0)) + 1 && r.loops.box[3] >= one('chin').y1 - 1, tag + 'one continuous lead silhouette around the whole head incl. both ears ' + JSON.stringify(r.loops));
-    assert(r.bg >= 2 && r.bg <= 7, tag + 'calm background ' + r.bg); assert(r.clash === 0, tag + 'background glass differs from the head glass it touches');
-    assert(r.n <= 45 && r.sharp === 0, tag + 'buildable ' + r.n + ' pieces, sharp ' + r.sharp);
-  }
-};
-async function catPlan(page, q, src) { return page.evaluate(async ([q, src]) => {
-  const o = glassDefaults(), s2 = q ? await toJPEG(src, 1280, q) : src, im = await glassImageData(s2, o), P = glassBuild(im, o), pcs = P.pieces.filter(p => !p.frame), key = pt => pt[0].toFixed(1) + ',' + pt[1].toFixed(1);
-  const vs = new Map(); for (const p of pcs) for (const r of p.poly) for (const pt of r) { const k = key(pt); (vs.get(k) || vs.set(k, new Set()).get(k)).add(p.id); }
-  const parts = pcs.map(p => { const pts = p.poly.flat(), xs = pts.map(q => q[0]), ys = pts.map(q => q[1]), x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys), ring = p.poly[0];
-    let a = 0; for (let i = 0; i < ring.length; i++) { const u = ring[i], v = ring[(i + 1) % ring.length]; a += u[0] * v[1] - v[0] * u[1]; }
-    const touch = new Set(); for (const r of p.poly) for (const pt of r) for (const id of vs.get(key(pt))) if (id !== p.id) touch.add(id);
-    return { id: p.id, part: p.part, subj: p.subj, glass: p.glass, rgb: p.rgb, areaIn: p.areaIn, widthIn: p.widthIn, x0, x1, y0, y1, cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, pa: Math.abs(a / 2), fill: Math.abs(a / 2) / ((x1 - x0) * (y1 - y0)), touch: [...touch] }; });
-  // silhouette: every open chain end meets another chain end → closed loop(s); report the bounding box of all of it
-  const ends = [], all = []; for (const s of P.silhouette) { const segs = s.filter(g => g[0] !== 'Z'), a = segs[0].slice(-2), b = segs[segs.length - 1].slice(-2); for (const g of segs) for (let i = 1; i < g.length; i += 2) all.push([g[i], g[i + 1]]); if (s[s.length - 1][0] !== 'Z') ends.push(a, b); }
-  const open = ends.filter((e, i) => !ends.some((f, j) => j !== i && Math.hypot(e[0] - f[0], e[1] - f[1]) < 0.6)).length;
-  const xs = all.map(q => q[0]), ys = all.map(q => q[1]), bg = parts.filter(p => !p.subj), clash = parts.filter(p => p.subj && bg.some(b => b.glass === p.glass && b.touch.includes(p.id))).length;
-  const ex = parts.filter(p => /^(ear|inner)/.test(p.part)), midX = (Math.min(...ex.map(p => p.x0)) + Math.max(...ex.map(p => p.x1))) / 2;
-  return { how: P.subject.how, parts, dots: P.dots, loops: { closed: P.silhouette.length > 0 && open === 0, open, box: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)] }, bg: bg.length, clash, n: P.pieces.length, sharp: P.stats.flagged.sharp.length, ppi: P.ppi, midX, minAreaIn: P.stats.minAreaIn, minWidthIn: P.stats.minWidthIn };
-}, [q, src]); }
-T['glass v3: bird on a busy fence found without a tap → zoomed, calm background, beak/eye/perch, distinct glass; tap step for others; buildings geometric; small features'] = async ({ page, dev }) => {
+T['glass v5: no tap step; a small subject in a busy scene is zoomed automatically; Stylized mode still available'] = async ({ page, dev }) => {
   await mode(page, 'glass'); await photo(page, 'photos/bird.jpg'); await page.click('#btnAnalyze');
   await page.waitForFunction(() => window.__glass && window.__glass() && window.__glass().settings.subjectBox, null, { timeout: 30000 }); await page.waitForSelector('#gPrev svg [data-piece]');
-  assert(!(await page.$('#gTapWrap')), 'no tap needed for the bird');
-  const P = await page.evaluate(() => { const P = window.__glass(), bg = P.pieces.filter(p => !p.frame && !p.subj), sg = P.pieces.filter(p => p.subj); return { box: P.settings.subjectBox, crop: P.crop, how: P.subject.how, frac: P.subject.frac, bg: bg.length, subj: sg.length, shapes: (P.shapes || []).length, dots: (P.dots || []).length, sil: (P.silhouette || []).length, clash: sg.filter(p => bg.some(b => b.glass === p.glass)).length }; });
-  assert(P.box[0] > 0.4 && P.box[2] < 0.65 && P.box[1] > 0.2 && P.box[3] < 0.65, 'auto box around the robin ' + P.box); assert(P.crop[2] < 0.5, 'zoomed to subject ' + P.crop); assert(P.how !== 'none' && P.frac > 0.1, 'subject found ' + JSON.stringify(P));
-  assert(P.bg >= 3 && P.bg <= 7, 'calm background: few large pieces ' + P.bg); assert(P.subj >= 6, 'bird has structure ' + P.subj); assert(P.shapes >= 1 && P.dots >= 1, 'beak shape + eye ' + JSON.stringify(P)); assert(P.sil > 0, 'silhouette lead'); assert(P.clash === 0, 'subject glass differs from background glass');
-  assert((await page.textContent('#gSubj')).includes('auto-detected'), 'label');
-  await page.click('[data-pv=side]'); await page.waitForTimeout(200); await shotEl(page.locator('#gPrev'), dev, 'v3-glass-bird-auto-side');
-  // a photo whose subject the normal finder handles still offers the tap step; a tap sets the subject
-  await page.click('[data-view=scan]'); await page.evaluate(() => { S.photos = []; }); await photo(page, 'photos/tulip.jpg'); await page.click('#btnAnalyze'); await page.waitForSelector('#gTapWrap', { timeout: 20000 }); await page.waitForFunction(() => document.querySelector('#gTapWrap').getBoundingClientRect().height > 100);
-  await shotEl(page.locator('#result'), dev, 'v3-glass-tap-first');
-  await page.waitForTimeout(300); const r = await page.$eval('#gTapWrap', e => { e.scrollIntoView({ block: 'center' }); const b = e.getBoundingClientRect(); return [b.left, b.top, b.width, b.height]; }); await page.mouse.click(r[0] + r[2] * 0.5, r[1] + r[3] * 0.4);
-  await page.waitForFunction(() => window.__glass() && window.__glass().settings.subjectName === 'your tap', null, { timeout: 30000 }); await page.waitForSelector('#gPrev svg [data-piece]');
-  const T2 = await page.evaluate(() => window.__glass().settings.subjectBox); assert(T2[0] < 0.5 && T2[2] > 0.5 && T2[1] < 0.4 && T2[3] > 0.4, 'tap → box around the tulip ' + T2);
-  assert((await page.textContent('#gSubj')).includes('your tap'), 'tap label');
-  // building → straight lines + rectangles automatically
-  await page.click('[data-view=scan]'); await page.evaluate(() => { S.photos = []; }); await photo(page, 'photos/house.jpg'); await page.click('#btnAnalyze'); await skipTap(page); await page.waitForSelector('#gPrev svg [data-piece]', { timeout: 30000 });
-  const H = await page.evaluate(() => { const P = window.__glass(); const segs = P.pieces.filter(p => !p.frame).flatMap(p => p.segs.flat()); return { style: P.style, curves: segs.filter(s => s[0] === 'Q').length, adv: P.stats.advanced }; });
-  assert(H.style === 'geometric' && H.curves === 0, 'house in straight-line style ' + JSON.stringify(H)); assert(H.adv >= 2, 'windows/doors kept as feature pieces ' + H.adv);
-  // cat: eyes kept as advanced pieces, pupils/nose painted; "Off" removes them
-  await page.click('[data-view=scan]'); await page.evaluate(() => { S.photos = []; }); await photo(page, 'photos/cat.jpg'); await page.click('#btnAnalyze'); await skipTap(page); await page.waitForSelector('#gPrev svg [data-piece]', { timeout: 30000 });
-  const C = await page.evaluate(() => { const P = window.__glass(); const blue = P.pieces.filter(p => p.flags.includes('advanced') && p.src[2] > p.src[0] + 20).length; return { blue, adv: P.stats.advanced, style: P.style, det: P.stats.detailLines }; });
-  assert(C.style === 'organic' && C.blue >= 2, 'both blue eyes kept ' + JSON.stringify(C)); assert(await page.$('#gPrev #detail'), 'painted detail layer');
-  assert((await page.textContent('#gStats')).includes('advanced feature piece'), 'advanced explained');
-  await page.selectOption('#gSmall', 'off'); await page.waitForFunction(() => window.__glass().settings.smallFeat === 'off' && !document.querySelector('#gPrev').classList.contains('busy'), null, { timeout: 30000 });
-  const off = await page.evaluate(() => ({ adv: window.__glass().stats.advanced, det: (window.__glass().detail || []).length })); assert(off.adv === 0 && off.det === 0, 'off = simplest ' + JSON.stringify(off));
+  assert(!(await page.$('#gTapWrap')), 'no tap needed');
+  const P = await page.evaluate(() => { const P = window.__glass(); return { box: P.settings.subjectBox, crop: P.crop, method: P.settings.method }; });
+  assert(P.method === 'trace', 'trace'); assert(P.box[0] > 0.4 && P.box[2] < 0.65 && P.box[1] > 0.2 && P.box[3] < 0.65, 'auto box around the robin ' + P.box); assert(P.crop[2] < 0.5, 'zoomed to subject ' + P.crop);
+  assert(await page.isVisible('#gFull'), '“Keep full scene” offered'); await page.check('#gFull'); await page.waitForFunction(() => window.__glass().crop[2] > 0.95 && !document.querySelector('#gPrev').classList.contains('busy'), null, { timeout: 30000 });
+  // cat: whole photo traced straight away (no tap), side by side with the original
+  await page.click('[data-view=scan]'); await page.evaluate(() => { S.photos = []; }); await photo(page, 'photos/cat.jpg'); await page.click('#btnAnalyze'); await page.waitForSelector('#gPrev svg [data-piece]', { timeout: 30000 });
+  assert(!(await page.$('#gTapWrap')), 'no tap step for the cat'); const C = await page.evaluate(() => { const P = window.__glass(); return { box: P.settings.subjectBox, n: P.stats.pieces, blue: P.pieces.filter(p => p.src && p.src[2] > p.src[0] + 25 && p.src[1] > p.src[0] + 15).length }; });
+  assert(!C.box && C.blue >= 2, 'cat traced whole, both blue-teal eyes are their own pieces ' + JSON.stringify(C));
+  await page.click('[data-pv=side]'); await page.waitForTimeout(200); assert((await page.$$('#gPrev .side2 svg')).length === 2, 'side by side'); await shotEl(page.locator('#gPrev'), dev, 'v5-glass-cat-side');
+  // switching to Stylized brings back its controls and the tap step
+  await page.selectOption('#gMethod', 'stylized'); await page.waitForSelector('#gTapWrap, #gPrev svg [data-piece]', { timeout: 30000 });
+  assert(await page.isVisible('#gStyle') && await page.isVisible('#gSmall'), 'stylized controls shown'); const sk = await page.$('#gTapSkip'); if (sk) await sk.click();
+  await page.waitForFunction(() => window.__glass() && window.__glass().settings.method === 'stylized' && !document.querySelector('#gPrev').classList.contains('busy') && document.querySelector('#gPrev svg [data-piece]'), null, { timeout: 30000 });
+  assert(!/Traced from your photo/.test(await page.textContent('#gStats')), 'stylized pattern');
 };
 T['glass v3: Grok finds subject + recognizability check (blind, then compare)'] = { key: true, fn: async ({ page, mock, dev }) => {
   await mode(page, 'glass'); await photo(page, 'photos/tulip.jpg'); await page.click('#btnAnalyze'); await skipTap(page); await page.waitForSelector('#gPrev svg [data-piece]', { timeout: 30000 });

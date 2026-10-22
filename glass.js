@@ -88,7 +88,7 @@ function rebuild(R, W, H, colOf, fixedOf, groupOf, subjOf, advOf) {
 }
 
 /* Remove narrow necks, sharp points and slivers thinner than minW px (opening by a disc). */
-function openPieces(st, W, H, minW) {
+function openPieces(st, W, H, minW, byColor = false) {
   const { R } = st, r = minW / 2, D = distT(R, W, H), INF = 1e9;
   const reach = new Float32Array(W * H).fill(INF);
   for (let i = 0; i < W * H; i++) if (D[i] >= r) reach[i] = 0;
@@ -104,7 +104,7 @@ function openPieces(st, W, H, minW) {
     const changes = [];
     for (let i = 0; i < W * H; i++) { if (!thin[i]) continue; const x = i % W, y = (i - x) / W, own = R[i], votes = new Map();
       for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { if (!dx && !dy) continue; const nx = x + dx, ny = y + dy; if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue; const j = ny * W + nx; if (thin[j] || R[j] === own || st.fixed[R[j]] || (st.adv && st.adv[R[j]])) continue; votes.set(R[j], (votes.get(R[j]) || 0) + (dx && dy ? 1 : 2)); }
-      if (votes.size) { let b = -1, bv = 0; for (const [k, v] of votes) if (v > bv) { bv = v; b = k; } changes.push([i, b]); } }
+      if (votes.size) { let b = -1, bv = 0; for (const [k, v0] of votes) { const v = byColor ? v0 / (1 + cdist(st.col[own], st.col[k]) / 20) : v0; if (v > bv) { bv = v; b = k; } } changes.push([i, b]); } }
     if (!changes.length) break;
     for (const [i, b] of changes) { R[i] = b; thin[i] = 0; count--; }
   }
@@ -823,10 +823,10 @@ async function glassAutoSubject(src) {
   if (!best) return { box: null, busy: true }; return { box: await glassTapBox(im, best.fx, best.fy), at: [best.fx, best.fy] };
 }
 /* ---------- main build ---------- */
-function glassDefaults() { return { colors: 6, simplicity: 4, detail: 7, zoom: true, style: 'auto', smallFeat: 'pieces', paint: true, widthIn: 12, unit: 'in', focus: true, frame: true, frameIn: 1, line: 'foil116', frameGlass: '' }; }
+function glassDefaults() { return { method: 'trace', colors: 6, simplicity: 4, detail: 7, zoom: true, style: 'auto', smallFeat: 'pieces', paint: true, widthIn: 12, unit: 'in', focus: true, frame: true, frameIn: 1, line: 'foil116', frameGlass: '' }; }
 function glassGeometry(o, aspect) { // aspect = h/w of image
   const fw = o.frame ? o.frameIn : 0, widthIn = Math.max(2, +o.widthIn || 12), heightIn = Math.max(2, o.heightIn ? +o.heightIn : r2(widthIn * aspect));
-  const long = Math.max(widthIn, heightIn), ppi = Math.max(160 / long, Math.min(24, 420 / long));
+  const long = Math.max(widthIn, heightIn), hi = o.method !== 'stylized', ppi = Math.max(160 / long, Math.min(hi ? 40 : 24, (hi ? 720 : 420) / long)); // traced photos get a finer grid so curves follow the photo
   const gridW = Math.round(widthIn * ppi), gridH = Math.round(heightIn * ppi), f = Math.round(fw * ppi);
   return { widthIn, heightIn, ppi: gridW / widthIn, gridW, gridH, f, innerW: gridW - 2 * f, innerH: gridH - 2 * f };
 }
@@ -835,7 +835,7 @@ function glassRules(o) { const s = Math.max(1, Math.min(10, +o.simplicity || 5))
 
 /* img: {width,height,data(RGBA)} already sized innerW x innerH */
 function glassBuild(img, o) {
-  o = { ...glassDefaults(), ...o }; const G = glassGeometry(o, img.aspect || img.height / img.width), rules = glassRules(o);
+  o = { ...glassDefaults(), ...o }; const tr = o.method !== 'stylized', G = glassGeometry(o, img.aspect || img.height / img.width), rules = tr ? traceRules(o) : glassRules(o);
   if (G.innerW !== img.width || G.innerH !== img.height) throw new Error(`image is ${img.width}×${img.height}, expected ${G.innerW}×${G.innerH}`);
   const W = G.gridW, H = G.gridH, iw = img.width, ih = img.height, ppi = G.ppi, notes = [];
   // photo → Lab, edge-preserving smoothing, colour edges
@@ -845,29 +845,29 @@ function glassBuild(img, o) {
   // subject (with optional Grok box, given in photo coords → panel coords via the crop)
   const cr = img.crop || [0, 0, 1, 1], toIn = b => [(b[0] - cr[0]) / cr[2], (b[1] - cr[1]) / cr[3], (b[2] - cr[0]) / cr[2], (b[3] - cr[1]) / cr[3]].map(v => Math.max(0, Math.min(1, v)));
   let ih2 = 0; for (let i = 0; i < img.data.length; i += 997) ih2 = (ih2 * 31 + img.data[i]) | 0;
-  const sm = o.focus ? subjectMask(F, A, E, iw, ih, { subjectBox: o.subjectBox ? toIn(o.subjectBox) : null, cacheKey: cr.join(',') + ':' + ih2 + ':' + rules.blur }, notes) : { mask: new Uint8Array(n0).fill(1), how: 'off', frac: 1 };
+  const sm = tr ? { mask: new Uint8Array(n0).fill(1), how: 'off', frac: 1 } : o.focus ? subjectMask(F, A, E, iw, ih, { subjectBox: o.subjectBox ? toIn(o.subjectBox) : null, cacheKey: cr.join(',') + ':' + ih2 + ':' + rules.blur }, notes) : { mask: new Uint8Array(n0).fill(1), how: 'off', frac: 1 };
   let mask = sm.mask, featMap = null;
   if (o.features && o.features.length) { featMap = new Uint8Array(n0); for (const f of o.features) { const bx = toIn(f.box); for (let y = Math.floor(bx[1] * ih); y < Math.ceil(bx[3] * ih); y++) for (let x = Math.floor(bx[0] * iw); x < Math.ceil(bx[2] * iw); x++) featMap[y * iw + x] = 1; } }
   // superpixels → merge across weak edges (detail on subject, big simple pieces behind)
   const subjT = minA * (1 + (10 - det) * 0.15), featT = minA, bgT = minA * (2.5 + sim * 0.5);
   const S0 = Math.max(4, Math.min(9, Math.round(Math.sqrt(minA) * 0.3)));
   const Cm = contourMap(A, E, iw, ih), Ec = new Float32Array(n0); for (let p = 0; p < n0; p++) Ec[p] = Cm[p] ? 1 : E[p] * 0.25;
-  const axf = axisEdgeFrac(A, E, iw, ih), fz0 = o.style !== 'organic' && o.facade !== false && sm.how !== 'backdrop' && (o.style === 'geometric' || axf >= 0.4) ? facadeLayout(A, F, iw, ih, ppi) : null;
+  const axf = tr ? 0 : axisEdgeFrac(A, E, iw, ih), fz0 = !tr && o.style !== 'organic' && o.facade !== false && sm.how !== 'backdrop' && (o.style === 'geometric' || axf >= 0.4) ? facadeLayout(A, F, iw, ih, ppi) : null;
   // a building: mostly straight edges, or nearly so and a facade (sky, windows, doors) is actually found
-  const geo = o.style === 'geometric' || (o.style !== 'organic' && (axf >= 0.5 || (!!fz0 && fz0.ops.filter(q => q.type && q.type !== 'wall').length >= 3)));
+  const geo = !tr && (o.style === 'geometric' || (o.style !== 'organic' && (axf >= 0.5 || (!!fz0 && fz0.ops.filter(q => q.type && q.type !== 'wall').length >= 3))));
   if (geo && o.style !== 'geometric') notes.push('Straight-line style chosen automatically (lots of horizontal/vertical edges, e.g. a building) — windows and doors become rectangles. Switch Style to Organic for curves.');
   if (geo && sm.how !== 'backdrop') { sm.mask.fill(1); sm.how = 'off'; sm.frac = 1; }
   // an animal face (two eyes found): a stylised, cuttable head layout replaces the free-form merge
-  const fc = !geo && o.face !== false && o.style !== 'geometric' && o.smallFeat !== 'off' && o.focus !== false ? faceLayout(A, F, iw, ih, ppi, minA, rules.maxAreaIn * ppi * ppi) : null;
+  const fc = !tr && !geo && o.face !== false && o.style !== 'geometric' && o.smallFeat !== 'off' && o.focus !== false ? faceLayout(A, F, iw, ih, ppi, minA, rules.maxAreaIn * ppi * ppi) : null;
   if (fc) { mask = fc.head; sm.mask = fc.head; sm.how = 'face'; let hs = 0; for (let p = 0; p < n0; p++) hs += fc.head[p]; sm.frac = hs / n0; }
-  const advMinIn = Math.max(0.35, rules.minAreaIn * 0.18), advMin = o.smallFeat === 'pieces' ? advMinIn * ppi * ppi : 0, advDE = 22;
-  const sp = geo ? xyCut(A, iw, ih, Math.max(3, Math.round(Math.sqrt(minA) * 0.35)), Math.round(n0 / (S0 * S0 * 2)), 0.5) : slic(A, iw, ih, S0, mask, 6);
+  const advMinIn = Math.max(0.35, rules.minAreaIn * 0.18), advMin = !tr && o.smallFeat === 'pieces' ? advMinIn * ppi * ppi : 0, advDE = 22;
+  const sp = tr ? null : geo ? xyCut(A, iw, ih, Math.max(3, Math.round(Math.sqrt(minA) * 0.35)), Math.round(n0 / (S0 * S0 * 2)), 0.5) : slic(A, iw, ih, S0, mask, 6);
   // calm background behind a found subject: a few large sweeping pieces from heavily blurred colour areas, so the subject pops
-  const calm = !geo && !fc && o.calmBg !== false && !!o.subjectBox && ['grok', 'box'].includes(sm.how) && sm.frac < 0.45;
+  const calm = !tr && !geo && !fc && o.calmBg !== false && !!o.subjectBox && ['grok', 'box'].includes(sm.how) && sm.frac < 0.45;
   if (calm) { const bgL = calmBackground(A, mask, iw, ih, { maxA: rules.maxAreaIn * ppi * ppi * 0.9, pieces: Math.max(4, Math.min(7, Math.round(n0 * (1 - sm.frac) / (rules.maxAreaIn * ppi * ppi * 0.55)))) }), key = new Int32Array(n0); let mx = 0; for (let p = 0; p < n0; p++) mx = Math.max(mx, sp.R[p]);
     for (let p = 0; p < n0; p++) key[p] = mask[p] ? sp.R[p] : mx + 1 + bgL[p]; const c = components(key, iw, ih); sp.R = c.R; sp.n = c.n; }
   const fz = geo ? fz0 : null;
-  const rm = fz ? { R: fz.R, n: fz.n } : fc ? { R: fc.R, n: fc.n } : ragMerge(sp.R, sp.n, A, Ec, mask, iw, ih, { subjT, featT, bgT, crumb: minA * 0.25, absMin: minA * 0.6, weakT: 0.15, strongT: 0.45 - det * 0.015, hardCap: Math.round(n0 / (minA * 1.5)), subjMax: subjT * 4, bgMax: rules.maxAreaIn * ppi * ppi, keepSil: sm.how !== 'none' && sm.how !== 'off', featMap, advMin, advDE, geo });
+  const rm = tr ? traceSegment(F, iw, ih, ppi, rules) : fz ? { R: fz.R, n: fz.n } : fc ? { R: fc.R, n: fc.n } : ragMerge(sp.R, sp.n, A, Ec, mask, iw, ih, { subjT, featT, bgT, crumb: minA * 0.25, absMin: minA * 0.6, weakT: 0.15, strongT: 0.45 - det * 0.015, hardCap: Math.round(n0 / (minA * 1.5)), subjMax: subjT * 4, bgMax: rules.maxAreaIn * ppi * ppi, keepSil: sm.how !== 'none' && sm.how !== 'off', featMap, advMin, advDE, geo });
   const RN = rm.n, rs3 = new Float64Array(RN * 3), ra = new Float64Array(RN), rsub = new Float64Array(RN);
   for (let p = 0; p < n0; p++) { const r = rm.R[p]; ra[r]++; rs3[r * 3] += F[p * 3]; rs3[r * 3 + 1] += F[p * 3 + 1]; rs3[r * 3 + 2] += F[p * 3 + 2]; rsub[r] += mask[p]; }
   const colors = fz ? fz.col.map(c => c.slice()) : fc ? fc.col.map(c => c.slice()) : [...Array(RN).keys()].map(r => [rs3[r * 3] / ra[r], rs3[r * 3 + 1] / ra[r], rs3[r * 3 + 2] / ra[r]]), subjOfLab = fc ? fc.subj.slice() : [...Array(RN).keys()].map(r => rsub[r] / ra[r] > 0.5 ? 1 : 0);
@@ -878,7 +878,7 @@ function glassBuild(img, o) {
     for (let y = 0; y < ih - 1; y++) for (let x = 0; x < iw - 1; x++) { const p = y * iw + x; pr(rm.R[p], rm.R[p + 1]); pr(rm.R[p], rm.R[p + iw]); }
     for (let r = 0; r < RN; r++) if (subjOfLab[r] && ra[r] < sA * 0.1 && ((nb[r] > Math.sqrt(ra[r]) * 0.8 && dB[r] < 16 && dB[r] < dS[r] * 0.8) || (nb[r] > Math.sqrt(ra[r]) * 2.2 && dB[r] < 20 && dB[r] < dS[r]))) { subjOfLab[r] = 0; for (let p = 0; p < n0; p++) if (rm.R[p] === r) { mask[p] = 0; if (bN[r] >= 0) rm.R[p] = bN[r]; } } }
   // key small features (eyes, nose, windows, door): small but high-contrast regions on the subject are kept as "advanced" pieces
-  const advOfLab = new Uint8Array(RN); if (fc) fc.adv.forEach((v, r) => advOfLab[r] = v);
+  const advOfLab = new Uint8Array(RN); if (fc) fc.adv.forEach((v, r) => advOfLab[r] = v); if (tr && rm.adv) rm.adv.forEach((v, r) => advOfLab[r] = v);
   if (advMin && !fc) { const rl = new Float64Array(RN * 3), fa = new Float64Array(RN); for (let p = 0; p < n0; p++) { const r = rm.R[p]; rl[r * 3] += A[p * 3]; rl[r * 3 + 1] += A[p * 3 + 1]; rl[r * 3 + 2] += A[p * 3 + 2]; if (featMap) fa[r] += featMap[p]; }
     const bc = new Float64Array(RN), bt = new Float64Array(RN), mnd = new Float64Array(RN).fill(1e9), labOf = r => [rl[r * 3] / ra[r], rl[r * 3 + 1] / ra[r], rl[r * 3 + 2] / ra[r]];
     const pair = (a, b) => { if (a === b) return; const la = labOf(a), lb = labOf(b), d = Math.hypot(la[0] - lb[0], la[1] - lb[1], la[2] - lb[2]); if (d < mnd[a]) mnd[a] = d; if (d < mnd[b]) mnd[b] = d; };
@@ -899,24 +899,35 @@ function glassBuild(img, o) {
   // pieces
   let cc = components(L, W, H);
   let st = { R: cc.R, n: cc.n, col: cc.from.map(l => colors[l]), fixed: cc.from.map(l => isFrame(l) ? 1 : 0), group: cc.from.map(() => -1), subj: cc.from.map(l => isFrame(l) ? 0 : subjOfLab[l]), adv: cc.from.map(l => isFrame(l) ? 0 : advOfLab[l]), E: Eg }; let groups = 0;
-  mergeSmall(st, W, H, minA * 0.35, ppi);                    // drop speckles first
-  openPieces(st, W, H, minW); Object.assign(st, rebuild(st.R, W, H, st.col, st.fixed, st.group, st.subj, st.adv));
-  mergeSmall(st, W, H, minA, ppi);
+  if (!tr) mergeSmall(st, W, H, minA * 0.35, ppi);                    // drop speckles first (a traced photo already has none)
+  openPieces(st, W, H, minW, tr); Object.assign(st, rebuild(st.R, W, H, st.col, st.fixed, st.group, st.subj, st.adv));
+  mergeSmall(st, W, H, tr ? minA * 0.5 : minA, ppi); // traced: only the crumbs left by trimming narrow necks
   let rings;
   for (let round = 0; round < 4; round++) {
     // oversize → split; holes → split through the hole
     let changed = false; const s = regionStats(st.R, st.n, W, H);
     for (let i = 0, n0 = st.n; i < n0; i++) if (!st.fixed[i] && s.area[i] > rules.maxAreaIn * ppi * ppi) { splitRegion(st, W, H, i, Math.ceil(s.area[i] / (rules.maxAreaIn * ppi * ppi * 0.7)), groups++); changed = true; }
     if (changed) Object.assign(st, rebuild(st.R, W, H, st.col, st.fixed, st.group, st.subj, st.adv));
-    if (fixCheckers(st.R, W, H)) { Object.assign(st, rebuild(st.R, W, H, st.col, st.fixed, st.group, st.subj, st.adv)); mergeSmall(st, W, H, minA, ppi); fixCheckers(st.R, W, H); Object.assign(st, rebuild(st.R, W, H, st.col, st.fixed, st.group, st.subj, st.adv)); }
+    if (fixCheckers(st.R, W, H)) { Object.assign(st, rebuild(st.R, W, H, st.col, st.fixed, st.group, st.subj, st.adv)); mergeSmall(st, W, H, tr ? minA * 0.5 : minA, ppi); fixCheckers(st.R, W, H); Object.assign(st, rebuild(st.R, W, H, st.col, st.fixed, st.group, st.subj, st.adv)); }
     const tr = traceRegions(st.R, st.n, W, H); let holes = 0;
     tr.rings.forEach((rs, i) => { if (rs.length < 2 || st.fixed[i]) return; const pts = rs.map(r => r.map(v => [v % tr.VW, Math.floor(v / tr.VW)])), ar = pts.map(p => Math.abs(ringArea(p))), outer = ar.indexOf(Math.max(...ar));
-      pts.forEach((hp, j) => { if (j === outer) return; const cx = Math.round(hp.reduce((a, p) => a + p[0], 0) / hp.length), g = groups++, base = st.n; for (let q = 0; q < W * H; q++) if (st.R[q] === i && q % W >= cx) st.R[q] = base; st.col.push(st.col[i]); st.fixed.push(0); st.group.push(g); if (st.subj) st.subj.push(st.subj[i]); if (st.adv) st.adv.push(st.adv[i]); st.group[i] = g; st.n++; holes++; }); });
+      pts.forEach((hp, j) => { if (j === outer) return; const cx = Math.round(hp.reduce((a, p) => a + p[0], 0) / hp.length), cy = hp.reduce((a, p) => a + p[1], 0) / hp.length, g = groups++, base = st.n;
+      if (tr) { // two short straight cuts from the hole to the piece's outside edge (the two shortest rays at least 60° apart); the wedge between them becomes its own piece
+        const ray = t => { const dx = Math.cos(t), dy = Math.sin(t); let inR = false, len = 0; for (let k = 0; k < W + H; k++) { const x = Math.floor(cx + dx * k * 0.5), y = Math.floor(cy + dy * k * 0.5); if (x < 0 || y < 0 || x >= W || y >= H) return inR ? len : Infinity; const r = st.R[y * W + x]; if (r === i) { inR = true; len += 0.5; } else if (inR) return len; } return Infinity; };
+        const K = 24, rl = [...Array(K)].map((_, k) => [ray(k * 2 * Math.PI / K), k * 2 * Math.PI / K]).sort((a, b) => a[0] - b[0]), t1 = rl[0][1], t2 = (rl.find(r => { const d = Math.abs(r[1] - t1) % (2 * Math.PI); return Math.min(d, 2 * Math.PI - d) >= Math.PI / 3 - 1e-6; }) || rl[1])[1];
+        let a0 = Math.min(t1, t2), a1 = Math.max(t1, t2); const inside = a1 - a0 <= Math.PI; // the smaller wedge
+        const px = []; for (let q = 0; q < W * H; q++) if (st.R[q] === i) { px.push(q); let an = Math.atan2(((q / W) | 0) + 0.5 - cy, q % W + 0.5 - cx); if (an < 0) an += 2 * Math.PI; const w = an >= a0 && an <= a1; if (w === inside) st.R[q] = base; }
+        // keep only the cuts next to the hole: parts of the region the line crosses further away rejoin their neighbour across it
+        const cl = new Int32Array(px.length).fill(-1), at = new Map(px.map((q, k) => [q, k])), sz = []; let nc = 0;
+        for (let k = 0; k < px.length; k++) { if (cl[k] >= 0) continue; const lab0 = st.R[px[k]], stk = [k]; cl[k] = nc; let m = 0; while (stk.length) { const u = stk.pop(), q = px[u]; m++; for (const v of [q - 1, q + 1, q - W, q + W]) { const w = at.get(v); if (w !== undefined && cl[w] < 0 && st.R[v] === lab0) { cl[w] = nc; stk.push(w); } } } sz.push(m); nc++; }
+        const nearC = [i, base].map(l => { let bk = -1, bd = Infinity; for (let k = 0; k < px.length; k++) if (st.R[px[k]] === l) { const d = Math.hypot(px[k] % W + 0.5 - cx, ((px[k] / W) | 0) + 0.5 - cy); if (d < bd) { bd = d; bk = k; } } return bk >= 0 ? cl[bk] : -1; });
+        for (let pass = 0; pass < 3; pass++) for (let k = 0; k < px.length; k++) { const c = cl[k]; if (nearC.includes(c)) continue; const q = px[k]; for (const v of [q - 1, q + 1, q - W, q + W]) { const w = at.get(v); if (w !== undefined && st.R[v] !== st.R[q]) { const to = cl[w], toL = st.R[v]; for (let k2 = 0; k2 < px.length; k2++) if (cl[k2] === c) { cl[k2] = to; st.R[px[k2]] = toL; } break; } } } } // the shortest straight cut through the hole
+      else for (let q = 0; q < W * H; q++) if (st.R[q] === i && q % W >= cx) st.R[q] = base; st.col.push(st.col[i]); st.fixed.push(0); st.group.push(g); if (st.subj) st.subj.push(st.subj[i]); if (st.adv) st.adv.push(st.adv[i]); st.group[i] = g; st.n++; holes++; }); });
     if (!holes && !changed) break;
-    Object.assign(st, rebuild(st.R, W, H, st.col, st.fixed, st.group, st.subj, st.adv)); mergeSmall(st, W, H, minA, ppi);
+    Object.assign(st, rebuild(st.R, W, H, st.col, st.fixed, st.group, st.subj, st.adv)); mergeSmall(st, W, H, tr ? minA * 0.5 : minA, ppi);
   }
   fixCheckers(st.R, W, H); Object.assign(st, rebuild(st.R, W, H, st.col, st.fixed, st.group, st.subj, st.adv));
-  const chains = []; rings = vectorize(st.R, st.n, W, H, { smooth: geo ? 0 : 3, eps: geo ? 0.75 : rules.eps, chains, pins: fc ? fc.pins.map(([x, y]) => [x + G.f, y + G.f]) : null });
+  const chains = []; rings = vectorize(st.R, st.n, W, H, { smooth: geo ? 0 : tr ? rules.smooth : 3, eps: geo ? 0.75 : rules.eps, chains, pins: fc ? fc.pins.map(([x, y]) => [x + G.f, y + G.f]) : null });
   if (geo) { rings.forEach(rs => rs && rs.forEach(r => r.forEach(q => q.hard = true))); chains.forEach(c => c.pts && c.pts.forEach(q => q.hard = true)); }
   // piece colours: the photo's average under each piece, then grouped into the chosen number of glass colours
   const sa = new Float64Array(st.n * 4); { for (let y = 0; y < ih; y++) for (let x = 0; x < iw; x++) { const r = st.R[(y + G.f) * W + x + G.f], q = y * iw + x; if (st.fixed[r]) continue; sa[r * 4] += F[q * 3]; sa[r * 4 + 1] += F[q * 3 + 1]; sa[r * 4 + 2] += F[q * 3 + 2]; sa[r * 4 + 3]++; }
@@ -924,7 +935,7 @@ function glassBuild(img, o) {
   const kc = Math.max(2, Math.min(10, Math.round(o.colors))), qs = [];
   for (let r = 0; r < st.n; r++) if (!st.fixed[r] && (!calm || st.subj[r])) { const reps = Math.max(1, Math.min(40, Math.round(sa[r * 4 + 3] / minA * 2 * (st.subj[r] && sm.frac < 0.45 ? 3 : 1)))); for (let k = 0; k < reps; k++) qs.push(...st.col[r]); }
   const qC = kmeans(new Float32Array(qs), kc, 20, 13), userCols = (o.userColors || []).map(u => [u.name, ...[1, 3, 5].map(i => parseInt(u.hex.slice(i, i + 2), 16))]);
-  const glassOf = r => st.fixed[r] ? { name: o.frameGlass || nearestGlass(dark).name, rgb: st.col[r] } : fz || fc ? nearestGlass(st.col[r], userCols) : calm && !st.subj[r] ? nearestGlass(st.col[r], userCols) : calm && (() => { const c0 = Math.hypot(...gLab(...st.col[r]).slice(1)); return c0 >= 30 && Math.hypot(...gLab(...qC[nearestC(qC, ...st.col[r])]).slice(1)) < c0 * 0.6; })() ? nearestGlass(st.col[r], userCols) : nearestGlass(qC[nearestC(qC, ...st.col[r])], userCols);
+  const glassOf = r => st.fixed[r] ? { name: o.frameGlass || nearestGlass(dark).name, rgb: st.col[r] } : tr || fz || fc ? nearestGlass(st.col[r], userCols) : calm && !st.subj[r] ? nearestGlass(st.col[r], userCols) : calm && (() => { const c0 = Math.hypot(...gLab(...st.col[r]).slice(1)); return c0 >= 30 && Math.hypot(...gLab(...qC[nearestC(qC, ...st.col[r])]).slice(1)) < c0 * 0.6; })() ? nearestGlass(st.col[r], userCols) : nearestGlass(qC[nearestC(qC, ...st.col[r])], userCols);
   // piece data
   const D = distT(st.R, W, H), s = regionStats(st.R, st.n, W, H), best = new Int32Array(st.n).fill(-1), bestD = new Float32Array(st.n);
   for (let i = 0; i < W * H; i++) { const r = st.R[i]; if (D[i] > bestD[r]) { bestD[r] = D[i]; best[r] = i; } }
@@ -1003,9 +1014,10 @@ function glassBuild(img, o) {
   if (outlineKept < 45 && sm.how !== 'none' && !fc) notes.push(`Only ${outlineKept}% of the subject’s outlines became lead lines at this size. For more recognisable detail, make the panel larger, lower Simplicity, or raise Detail on subject.`);
   // painted detail: strong interior contours that are not lead lines (subject + must-keep features; whole panel when there is no subject)
   let detail = [], dots = [], shapes = [], overlay = [];
+  if (tr) notes.push(`Traced from your photo: ${rm.colors} colour zones found, then every area smaller than ${rules.minAreaIn} sq in was merged into its most similar neighbour; each piece shows its real average photo colour (glass names are the nearest stock glass).`);
   if (fc) notes.push(`Face layout: ${fc.ears} ear${fc.ears === 1 ? '' : 's'} as triangles with inner ears, eyes with painted pupils, nose, muzzle split down the middle, chin${fc.stripes ? ', ' + fc.stripes + ' forehead stripes' : ''}; the background is a few calm pieces.`);
   if (fz) { for (const l of fz.overlay) overlay.push(l.map(([x, y]) => [r2(x + G.f), r2(y + G.f)])); notes.push(`Building layout: ${fz.ops.length} windows/doors as rectangles${fz.sky ? ', sky' : ''}${fz.cornices.length ? ', ' + fz.cornices.length + ' cornice line' + (fz.cornices.length > 1 ? 's' : '') : ''}; bars and planks are came lines.`); }
-  if (o.paint !== false && o.smallFeat !== 'off') {
+  if (!tr && o.paint !== false && o.smallFeat !== 'off') {
     const hasSubj = sm.how !== 'none' && sm.how !== 'off' && !geo, thin = contourMap(A, E, iw, ih, hasSubj ? 0.45 : geo ? 0.5 : 0.62, 0.28, Math.round(ppi * 0.3), false), allow = new Uint8Array(n0);
     if (hasSubj) { const dm = blur1(Float32Array.from(mask), iw, ih, 3); for (let p = 0; p < n0; p++) allow[p] = dm[p] > 0.5 ? 1 : 0; } else allow.fill(1);
     if (featMap) for (let p = 0; p < n0; p++) if (featMap[p]) allow[p] = 1;
@@ -1074,7 +1086,7 @@ function glassSubjectCrop(im, w, h, o) {
 }
 async function glassImageData(src, o) {
   const im = typeof src === 'string' ? await loadImg(src) : src; const w = im.naturalWidth || im.width, h = im.naturalHeight || im.height; o = { ...glassDefaults(), ...o };
-  const zc = o.focus && o.zoom ? glassSubjectCrop(im, w, h, o) : [0, 0, 1, 1], zw = zc[2] * w, zh = zc[3] * h;
+  const zc = (o.method === 'stylized' || o.subjectBox) && o.focus && o.zoom ? glassSubjectCrop(im, w, h, o) : [0, 0, 1, 1], zw = zc[2] * w, zh = zc[3] * h;
   const aspect = o.heightIn ? +o.heightIn / (+o.widthIn || 12) : zh / zw, G = glassGeometry(o, aspect);
   const c = document.createElement('canvas'); c.width = G.innerW; c.height = G.innerH; const g = c.getContext('2d', { willReadFrequently: true });
   // cover-fit the (zoomed) region into the panel's aspect

@@ -148,3 +148,4 @@ table.dims{width:100%;border-collapse:collapse;font-size:13.5px}table.dims td,ta
 .pickable[aria-pressed=true]::after{content:attr(data-n);position:absolute;right:10px;top:50%;transform:translateY(-50%);background:var(--accent);color:#06261b;font-weight:700;border-radius:50%;width:26px;height:26px;display:grid;place-items:center}
 .tap-first{cursor:crosshair}
 .tap-dot{position:absolute;width:26px;height:26px;margin:-13px 0 0 -13px;border-radius:50%;border:3px solid var(--accent);box-shadow:0 0 0 3px rgba(0,0,0,.5);pointer-events:none}
+.range-ends{display:flex;justify-content:space-between;margin-top:-2px;font-weight:400}

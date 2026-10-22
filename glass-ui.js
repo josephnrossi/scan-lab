@@ -17,31 +17,32 @@ function validateSubject(j) {
   return { subject: str(j.subject, 80) || 'subject', box, features };
 }
 async function glassOpen(out, { image, saved } = {}) {
-  let o = { ...glassDefaults(), ...(saved ? saved.result.settings : {}) }, scan = saved || null, P = saved ? saved.result : null, tips = saved ? saved.tips || null : null, img = saved ? saved.image : image, recog = saved ? saved.recog || null : null;
+  let o = { ...glassDefaults(), ...(saved ? { method: 'stylized', ...saved.result.settings } : {}) }, scan = saved || null, P = saved ? saved.result : null, tips = saved ? saved.tips || null : null, img = saved ? saved.image : image, recog = saved ? saved.recog || null : null;
   if (!saved) { try { const pf = JSON.parse(localStorage.getItem(GLASS_PREFILL) || 'null'); if (pf && pf.widthIn) { o.widthIn = pf.widthIn; o.heightIn = pf.heightIn; localStorage.removeItem(GLASS_PREFILL); toast(`Using measured size ${pf.widthIn} × ${pf.heightIn} in`); } } catch (_) {} }
   if (!saved) { try { const uc = JSON.parse(localStorage.getItem('glassColors') || 'null'); if (Array.isArray(uc) && uc.length) o.userColors = uc.filter(c => /^#[0-9a-f]{6}$/i.test(c.hex)).slice(0, 10); } catch (_) {} }
   const cm = () => o.unit === 'cm', toU = v => cm() ? r1(v * 2.54) : r2(v), fromU = v => cm() ? v / 2.54 : v;
   out.innerHTML = `<div class="card">
     <div class="res-head"><h2>Stained-glass pattern</h2><span class="badge" id="gDiffBadge"></span></div>
-    <p class="muted small">Made on this device — no key needed. Lead lines follow the photo’s real outlines; every piece is a closed shape sized for a beginner.</p>
+    <p class="muted small" id="gIntro"></p>
     <div class="glass-preview" id="gPrev"></div>
     <div class="seg seg-grid" role="group" aria-label="View" style="margin-top:8px">${GLASS_VIEWS.map(([k, l]) => `<button data-pv="${k}" aria-pressed="${k === 'pattern'}">${l}</button>`).join('')}</div>
     <div class="row gap wrap" style="margin-top:6px"><div class="seg" role="group" aria-label="Piece colours"><button data-fill="photo" aria-pressed="true">Photo colors</button><button data-fill="glass" aria-pressed="false">Glass colors</button></div></div>
     <label class="field" id="gOpWrap" hidden>Pattern opacity <b id="gOpV"></b><input type="range" id="gOp" min="0" max="100" step="5" value="45"></label>
     <div id="gSubj" class="small"></div>
     <div class="ctl" style="margin-top:10px">
-      <label>Detail on subject <b id="gDetV"></b><input type="range" id="gDet" min="1" max="10" step="1" title="Higher = more, smaller pieces on the subject"></label>
-      <label>Simplicity <b id="gSimV"></b><input type="range" id="gSim" min="1" max="10" step="1" title="Higher = fewer, larger pieces (sets the minimum piece size)"></label>
-      <label>Glass colors <b id="gColV"></b><input type="range" id="gCol" min="2" max="10" step="1"></label>
+      <label>Method <select id="gMethod"><option value="trace">Trace photo (faithful)</option><option value="stylized">Stylized (simplified shapes)</option></select></label>
+      <label><span id="gDetL">Detail</span> <b id="gDetV"></b><input type="range" id="gDet" min="1" max="10" step="1" title="1 = simple, 10 = detailed: more colour zones and smaller pieces"><span class="range-ends muted small"><span>simple</span><span>detailed</span></span></label>
+      <label><span id="gSimL">Simplify</span> <b id="gSimV"></b><input type="range" id="gSim" min="1" max="10" step="1" title="Higher = coarser regions: fewer, larger pieces (sets the minimum piece size)"></label>
+      <label data-sty>Glass colors <b id="gColV"></b><input type="range" id="gCol" min="2" max="10" step="1"></label>
       <label>Lines <select id="gLine">${Object.entries(GLASS_LINES).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('')}</select></label>
       <label>Finished width <input type="number" id="gW" inputmode="decimal" min="2" step="0.5"></label>
       <label>Height <input type="number" id="gH" inputmode="decimal" min="2" step="0.5" placeholder="auto"></label>
       <label>Units <span class="seg"><button data-u="in">in</button><button data-u="cm">cm</button></span></label>
-      <label class="toggle"><input type="checkbox" id="gFocus"> Focus on subject</label>
-      <label class="toggle"><input type="checkbox" id="gFull"> Keep full scene</label>
-      <label>Style <select id="gStyle"><option value="auto">Auto</option><option value="organic">Organic (curves)</option><option value="geometric">Geometric (straight lines)</option></select></label>
-      <label>Small features <select id="gSmall"><option value="pieces">Pieces + paint</option><option value="paint">Paint only</option><option value="off">Off (simplest)</option></select></label>
-      <label class="toggle"><input type="checkbox" id="gPaint"> Painted detail lines</label>
+      <label data-sty class="toggle"><input type="checkbox" id="gFocus"> Focus on subject</label>
+      <label class="toggle" id="gFullL"><input type="checkbox" id="gFull"> Keep full scene</label>
+      <label data-sty>Style <select id="gStyle"><option value="auto">Auto</option><option value="organic">Organic (curves)</option><option value="geometric">Geometric (straight lines)</option></select></label>
+      <label data-sty>Small features <select id="gSmall"><option value="pieces">Pieces + paint</option><option value="paint">Paint only</option><option value="off">Off (simplest)</option></select></label>
+      <label data-sty class="toggle"><input type="checkbox" id="gPaint"> Painted detail lines</label>
       <label class="toggle"><input type="checkbox" id="gFrame"> Border frame</label>
       <label>Frame width <input type="number" id="gFW" inputmode="decimal" min="0.5" max="4" step="0.25"></label>
       <label>Frame glass <select id="gFG"><option value="">Auto (darkest)</option>${GLASS_PALETTE.map(p => `<option>${p[0]}</option>`).join('')}</select></label>
@@ -56,7 +57,10 @@ async function glassOpen(out, { image, saved } = {}) {
   </div><p class="muted small">PDFs print at real size (tiled on Letter pages with ⊕ alignment marks when larger). Print at 100% / Actual size. The original photo is saved with the pattern.</p></div>
   <div class="card" id="gTips"></div>`;
   const prev = $('#gPrev', out); let view = 'pattern', fillMode = 'photo', op = 0.45, t, picking = false;
-  const fill = () => {
+  const fill = () => { const tr = o.method !== 'stylized';
+    $('#gMethod', out).value = tr ? 'trace' : 'stylized'; $$('[data-sty]', out).forEach(e => e.hidden = tr); $('#gFullL', out).hidden = tr && !o.subjectBox;
+    $('#gDetL', out).textContent = tr ? 'Detail' : 'Detail on subject'; $('#gSimL', out).textContent = tr ? 'Simplify' : 'Simplicity';
+    $('#gIntro', out).textContent = tr ? 'Made on this device — no key needed. Traces your actual photo: its real colour zones become glass pieces, each shown in its average photo colour, with lead lines on every boundary. Small slivers are merged into their most similar neighbour so every piece stays cuttable.' : 'Made on this device — no key needed. Stylized: lead lines follow the photo’s main outlines with simplified shapes; every piece is a closed shape sized for a beginner.';
     $('#gCol', out).value = o.colors; $('#gColV', out).textContent = o.colors; $('#gSim', out).value = o.simplicity; $('#gSimV', out).textContent = o.simplicity; $('#gDet', out).value = o.detail; $('#gDetV', out).textContent = o.detail;
     $('#gW', out).value = toU(o.widthIn); $('#gH', out).value = o.heightIn ? toU(o.heightIn) : ''; $('#gH', out).placeholder = P ? 'auto ' + toU(P.heightIn) : 'auto';
     $$('[data-u]', out).forEach(b => b.setAttribute('aria-pressed', String(b.dataset.u === o.unit))); $('#gLine', out).value = o.line; $('#gFocus', out).checked = o.focus; $('#gFull', out).checked = !o.zoom; $('#gFull', out).disabled = !o.focus; $('#gStyle', out).value = o.style || 'auto'; $('#gSmall', out).value = o.smallFeat || 'pieces'; $('#gPaint', out).checked = o.paint !== false; $('#gPaint', out).disabled = o.smallFeat === 'off';
@@ -155,6 +159,7 @@ async function glassOpen(out, { image, saved } = {}) {
     } catch (e) { toast(e.message); renderTips(); }
   };
   fill();
+  $('#gMethod', out).onchange = e => { o.method = e.target.value; fill(); if (o.method === 'stylized' && !o.subjectBox) autoFirst(); else rebuild(); };
   $('#gCol', out).oninput = e => { o.colors = +e.target.value; $('#gColV', out).textContent = o.colors; rebuild(); };
   $('#gSim', out).oninput = e => { o.simplicity = +e.target.value; $('#gSimV', out).textContent = o.simplicity; rebuild(); };
   $('#gDet', out).oninput = e => { o.detail = +e.target.value; $('#gDetV', out).textContent = o.detail; rebuild(); };
@@ -195,6 +200,9 @@ async function glassOpen(out, { image, saved } = {}) {
   const autoFirst = async () => { prev.innerHTML = '<p style="padding:14px"><span class="spinner"></span>Looking for the subject…</p>'; let a = null; try { a = o.focus === false ? null : await glassAutoSubject(img); } catch (_) {}
     if (a && a.box) { o.subjectBox = a.box; o.subjectName = 'auto-detected subject'; o.focus = true; toast('Subject found automatically — tap “Pick subject” to change it'); rebuild(); }
     else if (a && a.busy && aiHasKey()) findSubject(); else tapFirst(); };
-  if (P) draw(); else if (o.subjectBox) rebuild(); else autoFirst();
+  // trace: no tap step — zoom in only when a small subject in a busy scene is found automatically
+  const autoTrace = async () => { prev.innerHTML = '<p style="padding:14px"><span class="spinner"></span>Tracing your photo…</p>'; let a = null; try { a = o.focus === false ? null : await glassAutoSubject(img); } catch (_) {}
+    if (a && a.box) { o.subjectBox = a.box; o.subjectName = 'auto-detected subject'; o.focus = true; o.zoom = true; toast('Small subject found — zoomed in. Tick “Keep full scene” to trace the whole photo'); fill(); } rebuild(); };
+  if (P) draw(); else if (o.subjectBox) rebuild(); else if (o.method !== 'stylized') autoTrace(); else autoFirst();
   window.__glass = () => P; window.__glassO = () => o;
 }
