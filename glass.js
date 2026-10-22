@@ -9,9 +9,9 @@ const GLASS_LINES = {
   came14: { in: 1 / 4, label: 'Lead came — 1/4″' },
 };
 const GLASS_PALETTE = [
-  ['Clear textured', 232, 236, 238], ['White opal', 246, 244, 236], ['Wispy white', 222, 218, 205], ['Light gray', 170, 174, 178], ['Charcoal', 70, 72, 76], ['Black opal', 22, 22, 24],
+  ['Clear textured', 232, 236, 238], ['White opal', 246, 244, 236], ['Wispy white', 222, 218, 205], ['Light gray', 170, 174, 178], ['Medium gray', 122, 124, 126], ['Warm gray', 150, 144, 130], ['Charcoal', 70, 72, 76], ['Black opal', 22, 22, 24],
   ['Ruby red', 170, 20, 30], ['Cherry red', 210, 40, 40], ['Pink', 236, 150, 170], ['Rose', 190, 90, 120], ['Orange', 240, 120, 30], ['Amber', 205, 135, 40],
-  ['Light amber', 230, 190, 110], ['Gold / yellow', 245, 205, 40], ['Pale yellow', 245, 235, 150], ['Brown', 115, 70, 35], ['Tan', 196, 160, 120], ['Olive', 120, 125, 50],
+  ['Light amber', 230, 190, 110], ['Gold / yellow', 245, 205, 40], ['Pale yellow', 245, 235, 150], ['Brown', 115, 70, 35], ['Terracotta', 165, 85, 55], ['Tan', 196, 160, 120], ['Olive', 120, 125, 50],
   ['Spring green', 120, 190, 80], ['Emerald green', 20, 130, 70], ['Dark green', 20, 75, 40], ['Teal', 30, 140, 140], ['Aqua', 120, 200, 210], ['Sky blue', 130, 180, 230],
   ['Medium blue', 50, 100, 190], ['Cobalt blue', 25, 45, 150], ['Navy', 20, 30, 80], ['Lavender', 175, 150, 210], ['Purple', 100, 50, 140], ['Flesh / peach', 240, 200, 170],
 ];
@@ -61,6 +61,11 @@ function components(L, W, H) {
   return { R, n, from };
 }
 /* chamfer (3-4) distance to nearest pixel of a different region or the outside; returns px units */
+/* chamfer distance to the nearest set pixel of a 0/1 map (image edges are not boundaries) */
+function chamferT(M, W, H) { const D = new Float32Array(W * H); for (let i = 0; i < W * H; i++) D[i] = M[i] ? 0 : 1e9;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const i = y * W + x; if (!D[i]) continue; let d = D[i]; if (x > 0) d = Math.min(d, D[i - 1] + 1); if (y > 0) { d = Math.min(d, D[i - W] + 1); if (x > 0) d = Math.min(d, D[i - W - 1] + 1.4142); if (x < W - 1) d = Math.min(d, D[i - W + 1] + 1.4142); } D[i] = d; }
+  for (let y = H - 1; y >= 0; y--) for (let x = W - 1; x >= 0; x--) { const i = y * W + x; if (!D[i]) continue; let d = D[i]; if (x < W - 1) d = Math.min(d, D[i + 1] + 1); if (y < H - 1) { d = Math.min(d, D[i + W] + 1); if (x < W - 1) d = Math.min(d, D[i + W + 1] + 1.4142); if (x > 0) d = Math.min(d, D[i + W - 1] + 1.4142); } D[i] = d; }
+  return D; }
 function distT(R, W, H) {
   const D = new Float32Array(W * H), INF = 1e9;
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const i = y * W + x, r = R[i]; const edge = x === 0 || y === 0 || x === W - 1 || y === H - 1 || R[i - 1] !== r || R[i + 1] !== r || R[i - W] !== r || R[i + W] !== r; D[i] = edge ? 1 : INF; }
@@ -247,6 +252,7 @@ function blur1(a, W, H, r) { const t = new Float32Array(a.length), o = new Float
   return o; }
 const otsu01 = (v, n) => { const h = new Array(256).fill(0); for (let i = 0; i < n; i++) h[Math.max(0, Math.min(255, Math.round(v[i] * 255)))]++; let sum = 0; for (let i = 0; i < 256; i++) sum += i * h[i]; let sB = 0, wB = 0, best = -1, t = 128; for (let i = 0; i < 256; i++) { wB += h[i]; if (!wB) continue; const wF = n - wB; if (!wF) break; sB += i * h[i]; const mB = sB / wB, mF = (sum - sB) / wF, b = wB * wF * (mB - mF) ** 2; if (b > best) { best = b; t = i; } } return t / 255; };
 /* Subject mask: plain-backdrop flood fill when it works, otherwise saliency (border-colour contrast × centre prior + edge density), optional Grok box. */
+const BOXMASK_CACHE = new Map();
 function subjectMask(F, A, E, W, H, o, notes = []) {
   const N = W * H; let mask = null, how = '';
   // 1) plain backdrop flood (works for product-style photos)
@@ -260,7 +266,9 @@ function subjectMask(F, A, E, W, H, o, notes = []) {
     while (st.length) { const p = st.pop(), x = p % W, y = (p - x) / W; for (const q of [x > 0 ? p - 1 : -1, x < W - 1 ? p + 1 : -1, y > 0 ? p - W : -1, y < H - 1 ? p + W : -1]) if (q >= 0 && !bgm[q] && dLab(q, bg) < T && E[q] < 0.6) { bgm[q] = 1; st.push(q); } }
     const fr = 1 - bgm.reduce((a, b) => a + b, 0) / N; if (fr > 0.03 && fr < 0.9) { mask = bgm.map(v => 1 - v); how = 'backdrop'; }
   }
-  // 2) saliency
+  // 2) a subject box (tap / Grok / auto): GrabCut-style colour models seeded by the box; the box is a hint, the mask may grow past it
+  if (!mask && o.subjectBox) { const key = [W, H, o.subjectBox.map(v => v.toFixed(4)).join(','), o.cacheKey || ''].join('|'); let c = BOXMASK_CACHE.get(key); if (!c || c.length !== N) { c = boxGrabMask(A, W, H, o.subjectBox, E); BOXMASK_CACHE.set(key, c); if (BOXMASK_CACHE.size > 6) BOXMASK_CACHE.delete(BOXMASK_CACHE.keys().next().value); } mask = c.slice(); how = 'grok'; }
+  // 3) saliency
   if (!mask) {
     const con = new Float32Array(N); for (let p = 0; p < N; p++) con[p] = Math.min(...C3.map(c => dLab(p, c)));
     // global colour rarity (histogram contrast): colours that are rare in the photo stand out
@@ -279,7 +287,7 @@ function subjectMask(F, A, E, W, H, o, notes = []) {
       if (k < N * 0.005) for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const fx = (x / W - bx[0]) / (bx[2] - bx[0]) - 0.5, fy = (y / H - bx[1]) / (bx[3] - bx[1]) - 0.5; mask[y * W + x] = fx * fx + fy * fy < 0.09 ? 1 : 0; } }
   }
   // refine (GrabCut-style): iterate foreground/background colour models from the saliency seed, smoothed spatially
-  if (how === 'saliency' || how === 'grok') {
+  if (how === 'saliency') {
     const core = mask.slice();
     for (let it = 0; it < 4; it++) {
       const fg = [], bg = [], st2 = Math.max(1, Math.floor(N / 5000)); for (let p = 0; p < N; p += st2) (mask[p] ? fg : bg).push(A[p * 3], A[p * 3 + 1], A[p * 3 + 2]);
@@ -302,6 +310,267 @@ function subjectMask(F, A, E, W, H, o, notes = []) {
   if (o.subjectBox && (fr < 0.003 || fr > 0.92)) { const b = o.subjectBox; for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const fx = (x / W - b[0]) / Math.max(1e-3, b[2] - b[0]) - 0.5, fy = (y / H - b[1]) / Math.max(1e-3, b[3] - b[1]) - 0.5; mask[y * W + x] = fx * fx + fy * fy < 0.2 ? 1 : 0; } return { mask, how: 'box', frac: mask.reduce((a, v) => a + v, 0) / N }; }
   if (!o.subjectBox && (fr < 0.02 || fr > 0.92)) { notes.push('No clear subject stood out, so detail is spread evenly. Try “Find subject with Grok”, or a photo with a plainer background.'); return { mask: new Uint8Array(N).fill(1), how: 'none', frac: 1 }; }
   return { mask, how, frac: fr };
+}
+/* Box-seeded foreground (tap / Grok / auto box), GrabCut-lite: weighted colour mixtures for subject vs background, a mild
+   "inside the box" prior, and edge-aware diffusion of the score (stands in for the graph cut) so the outline follows colour
+   edges. Box core = sure subject, outside the region of interest (box grown by 60%) = sure background. */
+function boxGrabMask1(A, W, H, bx, E, hullT, closeK, local) {
+  let last = null; const N = W * H, x0 = bx[0] * W, y0 = bx[1] * H, x1 = bx[2] * W, y1 = bx[3] * H, bw = Math.max(2, x1 - x0), bh = Math.max(2, y1 - y0), cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+  const R0 = [Math.max(0, x0 - bw * 0.25), Math.max(0, y0 - bh * 0.25), Math.min(W, x1 + bw * 0.25), Math.min(H, y1 + bh * 0.25)], roiA = (R0[2] - R0[0]) * (R0[3] - R0[1]);
+  const hard = new Int8Array(N), prior = new Float32Array(N), inB = new Uint8Array(N); let mask = new Uint8Array(N);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const p = y * W + x, fx = (x - cx) / bw, fy = (y - cy) / bh, inb = x >= x0 && x < x1 && y >= y0 && y < y1;
+    if (fx * fx + fy * fy < 0.14 * 0.14) hard[p] = 1; else if (x < R0[0] || x >= R0[2] || y < R0[1] || y >= R0[3]) hard[p] = -1;
+    prior[p] = inb ? 0.03 : -0.1; mask[p] = inb ? 1 : 0; inB[p] = inb ? 1 : 0; }
+  // edge weights (right, down) from colour difference
+  const wr = new Float32Array(N), wd = new Float32Array(N), dd = (p, q) => (A[p * 3] - A[q * 3]) ** 2 + (A[p * 3 + 1] - A[q * 3 + 1]) ** 2 + (A[p * 3 + 2] - A[q * 3 + 2]) ** 2;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const p = y * W + x; if (x < W - 1) wr[p] = Math.exp(-dd(p, p + 1) / (2 * 5 * 5)); if (y < H - 1) wd[p] = Math.exp(-dd(p, p + W) / (2 * 5 * 5)); }
+  const gmm = (S, kmax = 7) => { const k = Math.min(S.length / 3 / 20 | 0, kmax); if (k < 1) return null; const C = kmeans(new Float32Array(S), k, 8, 5), w = new Float64Array(C.length); for (let i = 0; i < S.length; i += 3) w[nearestC(C, S[i], S[i + 1], S[i + 2])]++; const t = w.reduce((a, b) => a + b, 0); return C.map((c, i) => [c, w[i] / t]).filter(c => c[1] > 0.01); };
+  const ll = (p, M) => { let s = 1e-9; for (const [c, w] of M) s += w * Math.exp(-((A[p * 3] - c[0]) ** 2 + (A[p * 3 + 1] - c[1]) ** 2 + (A[p * 3 + 2] - c[2]) ** 2) / (2 * 9 * 9)); return Math.log(s); };
+  for (let it = 0; it < 3; it++) {
+    const fg = [], bg = [], stp = Math.max(1, Math.floor(N / 6000)); for (let p = 0; p < N; p += stp) { if (mask[p] && inB[p]) fg.push(A[p * 3], A[p * 3 + 1], A[p * 3 + 2]); else if (!mask[p]) bg.push(A[p * 3], A[p * 3 + 1], A[p * 3 + 2]); }
+    const MF = gmm(fg), MB = gmm(bg); if (!MF || !MB) break;
+    // local background models: what the background looks like near each pixel (a dark wing beside a pale post is not background
+    // just because the ground at the bottom of the photo is dark too)
+    const GC = 6, cw = W / GC, chh = H / GC, cellOf = p => Math.min(GC - 1, Math.floor((p % W) / cw)) + GC * Math.min(GC - 1, Math.floor(((p / W) | 0) / chh)), cellS = Array.from({ length: GC * GC }, () => []);
+    const stp2 = Math.max(1, Math.floor(N / 8000)); if (local) for (let p = 0; p < N; p += stp2) if (!mask[p]) cellS[cellOf(p)].push(A[p * 3], A[p * 3 + 1], A[p * 3 + 2]);
+    const MBl = []; if (local) for (let cy2 = 0; cy2 < GC; cy2++) for (let cx2 = 0; cx2 < GC; cx2++) { let S = []; for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) { const a = cx2 + i, b = cy2 + j; if (a >= 0 && b >= 0 && a < GC && b < GC) { const cs = cellS[b * GC + a], st3 = Math.max(1, Math.floor(cs.length / 3 / 70)); for (let q = 0; q < cs.length; q += 3 * st3) S.push(cs[q], cs[q + 1], cs[q + 2]); } } MBl.push(S.length >= 90 ? gmm(S, 4) || MB : MB); }
+    const memo = new Map(), qk = p => ((Math.round(A[p * 3] / 3) * 90 + Math.round((A[p * 3 + 1] + 128) / 3)) * 90 + Math.round((A[p * 3 + 2] + 128) / 3)) * (local ? GC * GC : 1) + (local ? cellOf(p) : 0);
+    const u = new Float32Array(N), x = new Float32Array(N); for (let p = 0; p < N; p++) { if (hard[p]) { u[p] = hard[p] * 2; x[p] = u[p]; continue; } const k = qk(p); let d = memo.get(k); if (d === undefined) { d = Math.max(-1.5, Math.min(1.5, (ll(p, MF) - (local ? Math.max(ll(p, MBl[cellOf(p)]), ll(p, MB) - 1.5) : ll(p, MB))) / 2)); memo.set(k, d); } u[p] = d + prior[p]; x[p] = u[p]; }
+    const lam = 0.12; for (let k = 0; k < 120; k++) { const dir = k & 1; for (let yy = 0; yy < H; yy++) { const y = dir ? H - 1 - yy : yy; for (let xx = 0; xx < W; xx++) { const xq = dir ? W - 1 - xx : xx, p = y * W + xq; if (hard[p]) continue;
+          let sw = lam, sv = lam * u[p]; if (xq > 0) { sw += wr[p - 1]; sv += wr[p - 1] * x[p - 1]; } if (xq < W - 1) { sw += wr[p]; sv += wr[p] * x[p + 1]; } if (y > 0) { sw += wd[p - W]; sv += wd[p - W] * x[p - W]; } if (y < H - 1) { sw += wd[p]; sv += wd[p] * x[p + W]; } x[p] = sv / sw; } } }
+    const nm = new Uint8Array(N); for (let p = 0; p < N; p++) nm[p] = x[p] > 0 ? 1 : 0;
+    const c2 = components(nm, W, H), kp = new Uint8Array(c2.n); for (let p = 0; p < N; p++) if (hard[p] === 1) kp[c2.R[p]] = 1;
+    mask = new Uint8Array(N); for (let p = 0; p < N; p++) mask[p] = nm[p] && kp[c2.R[p]] ? 1 : 0; last = [MF, MB];
+  }
+  const m1 = mask.slice(), fr = m => { let a = 0; for (let p = 0; p < N; p++) a += m[p]; return a / roiA; };
+  // stage 2: watershed on the colour gradient between confident markers settles what colour alone cannot (shadowed belly vs dark background)
+  if (last && E) { const lab = new Int8Array(N), er = blur1(Float32Array.from(mask), W, H, 2), dmin = (p, M) => Math.min(...M.map(([c]) => Math.hypot(A[p * 3] - c[0], A[p * 3 + 1] - c[1], A[p * 3 + 2] - c[2])));
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const p = y * W + x; if (hard[p] === 1 || er[p] > 0.97) lab[p] = 1; else if (hard[p] === -1 || x < 2 || y < 2 || x >= W - 2 || y >= H - 2) lab[p] = 2; else if (!mask[p] && dmin(p, last[1]) < 7 && dmin(p, last[0]) > 22) lab[p] = 2; }
+    const Q = Array.from({ length: 256 }, () => []), lev = p => Math.min(255, Math.round(E[p] * 255)), NB = [-1, 1, -W, W], ok = (q, o, x) => q >= 0 && q < N && !(o === -1 && x === 0) && !(o === 1 && x === W - 1);
+    for (let p = 0; p < N; p++) if (lab[p]) { const x = p % W; for (const o of NB) { const q = p + o; if (ok(q, o, x) && !lab[q]) Q[lev(q)].push(q * 4 + lab[p]); } }
+    for (let l = 0; l < 256; l++) { const b = Q[l]; while (b.length) { const v = b.pop(), q = v >> 2, L = v & 3; if (lab[q]) continue; lab[q] = L; const x = q % W; for (const o of NB) { const r = q + o; if (ok(r, o, x) && !lab[r]) Q[Math.max(l, lev(r))].push(r * 4 + L); } } }
+    for (let p = 0; p < N; p++) mask[p] = lab[p] === 1 ? 1 : 0; }
+  if (fr(mask) > 0.8) mask.set(m1);
+  // stage 3: close concave gaps the edges could not (radius ~ subject size), never adding clearly-background colours
+  if (last && closeK) { let ar = 0; for (let p = 0; p < N; p++) ar += mask[p]; const r = closeK * Math.sqrt(ar), dOut = chamferT(mask, W, H), dil = new Uint8Array(N); for (let p = 0; p < N; p++) dil[p] = dOut[p] <= r ? 1 : 0;
+    const inv = dil.map(v => 1 - v), dIn = chamferT(inv, W, H), dmin = (p, M) => Math.min(...M.map(([c]) => Math.hypot(A[p * 3] - c[0], A[p * 3 + 1] - c[1], A[p * 3 + 2] - c[2])));
+    for (let p = 0; p < N; p++) if (!mask[p] && dIn[p] > r && hard[p] !== -1 && !(dmin(p, last[1]) < 6 && dmin(p, last[0]) > 30)) mask[p] = 1; }
+  // shape prior: bodies are blob-like, so fill the convex hull of what was found except pixels that clearly look like background
+  if (last && hullT) { const pts = []; for (let y = 0; y < H; y++) { let a = -1, b = -1; for (let x = 0; x < W; x++) if (mask[y * W + x]) { if (a < 0) a = x; b = x; } if (a >= 0) { pts.push([a, y], [b + 1, y]); } }
+    const keep0 = mask.slice(), hp = hull(pts); if (hp.length >= 3) for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const p = y * W + x; if (mask[p] || hard[p] === -1) continue; let ins = true; for (let i = 0; i < hp.length && ins; i++) { const [ax, ay] = hp[i], [bx2, by2] = hp[(i + 1) % hp.length]; if ((bx2 - ax) * (y - ay) - (by2 - ay) * (x - ax) < 0) ins = false; } if (ins && ll(p, last[0]) - ll(p, last[1]) > -hullT) mask[p] = 1; } }
+  if (last && hullT && fr(mask) > 0.85) return fr(m1) <= 0.85 ? m1 : mask;
+  return mask;
+}
+/* The box is only a hint, and colour alone is ambiguous for shadowed parts. Try a few readings — the box as given, grown, shifted
+   down (bodies, tails and legs usually hang below the colourful patch a tap or a detector finds) × global or local background
+   colour models — at half resolution, keep the one whose outline sits on real edges and does not run along the search limit (a leak),
+   then redo that one at full resolution. */
+function boxGrabMask(A, W, H, bx, E = null, hullT = 3, closeK = 0.4) {
+  if (!E) return boxGrabMask1(A, W, H, bx, E, hullT, closeK, false);
+  const W2 = W >> 1, H2 = H >> 1, A2 = new Float32Array(W2 * H2 * 3), E2 = new Float32Array(W2 * H2);
+  for (let y = 0; y < H2; y++) for (let x = 0; x < W2; x++) { const q = y * W2 + x; for (const [i, j] of [[0, 0], [1, 0], [0, 1], [1, 1]]) { const p = (y * 2 + j) * W + x * 2 + i; for (let k = 0; k < 3; k++) A2[q * 3 + k] += A[p * 3 + k] / 4; E2[q] = Math.max(E2[q], E[p]); } }
+  const bw = bx[2] - bx[0], bh = bx[3] - bx[1], cl = v => Math.max(0, Math.min(1, v)), jit = [bx, [bx[0] - bw * 0.15, bx[1] - bh * 0.15, bx[2] + bw * 0.15, bx[3] + bh * 0.15], [bx[0], bx[1] + bh * 0.12, bx[2], bx[3] + bh * 0.12], [bx[0] - bw * 0.15, bx[1] - bh * 0.03, bx[2] + bw * 0.15, bx[3] + bh * 0.27]].map(b => b.map(cl));
+  const score = (m, b, Wm, Hm, Em) => { const x0 = b[0] * Wm, y0 = b[1] * Hm, x1 = b[2] * Wm, y1 = b[3] * Hm, w = x1 - x0, h = y1 - y0, R0 = [Math.max(0, x0 - w * 0.25), Math.max(0, y0 - h * 0.25), Math.min(Wm, x1 + w * 0.25), Math.min(Hm, y1 + h * 0.25)]; let n = 0, e = 0, t = 0;
+    for (let y = 1; y < Hm - 1; y++) for (let x = 1; x < Wm - 1; x++) { const p = y * Wm + x; if (!m[p] || (m[p - 1] && m[p + 1] && m[p - Wm] && m[p + Wm])) continue; n++; e += Em[p]; if ((x - R0[0] < 2 && R0[0] > 1) || (R0[2] - x < 3 && R0[2] < Wm - 1) || (y - R0[1] < 2 && R0[1] > 1) || (R0[3] - y < 3 && R0[3] < Hm - 1)) t++; }
+    let a = 0; for (let y = Math.floor(R0[1]); y < R0[3]; y++) for (let x = Math.floor(R0[0]); x < R0[2]; x++) a += m[y * Wm + x]; const fa = a / Math.max(1, (R0[2] - R0[0]) * (R0[3] - R0[1]));
+    return n ? e / n - 1.2 * t / n - 2 * Math.max(0, fa - 0.65) : -9; };
+  const cands = []; for (const b of jit) for (const local of [false, true]) { const m = boxGrabMask1(A2, W2, H2, b, E2, hullT, closeK, local); cands.push({ v: score(m, b, W2, H2, E2), b, local, m }); }
+  // consensus: the hypotheses vote (a leak or a lost body is a minority), so a re-encoded photo gives the same subject
+  cands.sort((a, b) => b.v - a.v); const voters = cands.filter(c => c.v >= cands[0].v - 0.35), m2 = new Float32Array(W2 * H2);
+  for (const c of voters) for (let q = 0; q < W2 * H2; q++) m2[q] += c.m[q] / voters.length;
+  const up = new Float32Array(W * H); for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) up[y * W + x] = m2[Math.min(H2 - 1, y >> 1) * W2 + Math.min(W2 - 1, x >> 1)];
+  const ub = blur1(up, W, H, 2), out = new Uint8Array(W * H);
+  for (let p = 0; p < W * H; p++) out[p] = ub[p] > 0.5 ? 1 : 0;
+  // poles/branches: parts outside the box (+12%) that run on to the search limit are background, tails and feet that stop short stay
+  const bw0 = (bx[2] - bx[0]) * W, bh0 = (bx[3] - bx[1]) * H, ix0 = bx[0] * W - bw0 * 0.12, ix1 = bx[2] * W + bw0 * 0.12, iy0 = bx[1] * H - bh0 * 0.12, iy1 = bx[3] * H + bh0 * 0.12;
+  const rx0 = Math.max(0, bx[0] * W - bw0 * 0.25), rx1 = Math.min(W - 1, bx[2] * W + bw0 * 0.25), ry0 = Math.max(0, bx[1] * H - bh0 * 0.25), ry1 = Math.min(H - 1, bx[3] * H + bh0 * 0.25);
+  const outside = (x, y) => (x < ix0 || x > ix1 || y < iy0) && y < iy1, seen = new Uint8Array(W * H);
+  for (let p0 = 0; p0 < W * H; p0++) { const x0 = p0 % W, y0 = (p0 / W) | 0; if (!out[p0] || seen[p0] || !outside(x0, y0)) continue;
+    const st = [p0], comp = []; seen[p0] = 1; let lim = false;
+    while (st.length) { const p = st.pop(), x = p % W, y = (p / W) | 0; comp.push(p); if ((x <= rx0 + 1 && rx0 > 1) || (x >= rx1 - 1 && rx1 < W - 2) || (y <= ry0 + 1 && ry0 > 1)) lim = true;
+      for (const q of [x > 0 ? p - 1 : -1, x < W - 1 ? p + 1 : -1, y > 0 ? p - W : -1, y < H - 1 ? p + W : -1]) if (q >= 0 && out[q] && !seen[q] && outside(q % W, (q / W) | 0)) { seen[q] = 1; st.push(q); } }
+    if (lim) for (const p of comp) out[p] = 0; }
+  return out;
+}
+/* Facade layout for buildings (straight-line style): finds the sky above a stepped roofline, the ground strip, cornice lines and the
+   openings (windows, doors, bricked arches) as rectangles snapped to one straight-line grid; the wall between them becomes a few big
+   rectangles, so plaster stains and graffiti never turn into pieces. Bars, planks and brick courses inside an opening come back as
+   came lines (overlay lead). Returns null when it does not look like a facade, so the generic path runs instead. */
+function facadeLayout(A, F, iw, ih, ppi) {
+  const N = iw * ih, L = new Float32Array(N); for (let p = 0; p < N; p++) L[p] = A[p * 3];
+  const Lb = blur1(L, iw, ih, 1), Gx = new Float32Array(N), Gy = new Float32Array(N), ca = new Float32Array(N), cb2 = new Float32Array(N); for (let p = 0; p < N; p++) { ca[p] = A[p * 3 + 1]; cb2[p] = A[p * 3 + 2]; }
+  const Ca = blur1(ca, iw, ih, 2), Cb = blur1(cb2, iw, ih, 2), Ch = [null, Ca, Cb]; // JPEG stores colour at half resolution in blocks: smooth it before taking edges
+  for (let y = 1; y < ih - 1; y++) for (let x = 1; x < iw - 1; x++) { const p = y * iw + x; let gx = Math.abs(Lb[p + 1] - Lb[p - 1]), gy = Math.abs(Lb[p + iw] - Lb[p - iw]);
+    for (let k = 1; k < 3; k++) { gx = Math.max(gx, Math.abs(Ch[k][p + 1] - Ch[k][p - 1]) * 0.8); gy = Math.max(gy, Math.abs(Ch[k][p + iw] - Ch[k][p - iw]) * 0.8); } Gx[p] = gx; Gy[p] = gy; }
+  const pct = (a, q) => { const s = Float32Array.from(a).sort(); return s[Math.floor(s.length * q)]; }, tV = Math.max(5, pct(Gx, 0.8)), tH = Math.max(5, pct(Gy, 0.8));
+  // oriented edge maps with ±1 px tolerance across the line, and running sums along it
+  const bV = new Uint8Array(N), bH = new Uint8Array(N);
+  for (let y = 0; y < ih; y++) for (let x = 0; x < iw; x++) { const p = y * iw + x; for (let d = -1; d <= 1; d++) { if (x + d >= 0 && x + d < iw && Gx[p + d] > tV && Gx[p + d] >= Gy[p + d] * 0.7) bV[p] = 1; if (y + d >= 0 && y + d < ih && Gy[p + d * iw] > tH && Gy[p + d * iw] >= Gx[p + d * iw] * 0.7) bH[p] = 1; } }
+  const cV = new Float32Array((ih + 1) * iw), cH = new Float32Array((iw + 1) * ih);
+  for (let x = 0; x < iw; x++) for (let y = 0; y < ih; y++) cV[(y + 1) * iw + x] = cV[y * iw + x] + bV[y * iw + x];
+  for (let y = 0; y < ih; y++) for (let x = 0; x < iw; x++) cH[y * (iw + 1) + x + 1] = cH[y * (iw + 1) + x] + bH[y * iw + x];
+  const vs = (x, y0, y1) => (cV[y1 * iw + x] - cV[y0 * iw + x]) / Math.max(1, y1 - y0), hs = (y, x0, x1) => (cH[y * (iw + 1) + x1] - cH[y * (iw + 1) + x0]) / Math.max(1, x1 - x0);
+  // colour integral image for inside/outside contrast
+  const I = new Float64Array((iw + 1) * (ih + 1) * 3); for (let y = 0; y < ih; y++) for (let x = 0; x < iw; x++) for (let k = 0; k < 3; k++) { const q = ((y + 1) * (iw + 1) + x + 1) * 3 + k; I[q] = A[(y * iw + x) * 3 + k] + I[q - 3] + I[q - (iw + 1) * 3] - I[q - (iw + 2) * 3]; }
+  const box = (x0, y0, x1, y1) => { x0 = Math.max(0, x0); y0 = Math.max(0, y0); x1 = Math.min(iw, x1); y1 = Math.min(ih, y1); const n = Math.max(1, (x1 - x0) * (y1 - y0)), o = [0, 0, 0]; for (let k = 0; k < 3; k++) o[k] = (I[(y1 * (iw + 1) + x1) * 3 + k] - I[(y0 * (iw + 1) + x1) * 3 + k] - I[(y1 * (iw + 1) + x0) * 3 + k] + I[(y0 * (iw + 1) + x0) * 3 + k]) / n; return [o, n]; };
+  // candidate line positions: columns / rows holding a long oriented run
+  const runsV = x => { let best = 0, cur = 0, gap = 0; for (let y = 0; y < ih; y++) { if (bV[y * iw + x]) { cur += gap + 1; gap = 0; } else if (cur && gap < 2) gap++; else { cur = 0; gap = 0; } if (cur > best) best = cur; } return best; };
+  const runsH = y => { let best = 0, cur = 0, gap = 0; for (let x = 0; x < iw; x++) { if (bH[y * iw + x]) { cur += gap + 1; gap = 0; } else if (cur && gap < 2) gap++; else { cur = 0; gap = 0; } if (cur > best) best = cur; } return best; };
+  const nms = (vals, minV) => { const out = []; for (let i = 0; i < vals.length; i++) if (vals[i] >= minV && vals.slice(Math.max(0, i - 2), i + 3).every((v, j) => v <= vals[i] || (v === vals[i] && Math.max(0, i - 2) + j >= i))) out.push(i); return out; };
+  const X = nms([...Array(iw).keys()].map(runsV), ih * 0.08), Y = nms([...Array(ih).keys()].map(runsH), iw * 0.06);
+  if (X.length < 4 || Y.length < 3) return null;
+  const probe = (x0, x1, y0, y1) => { const w = x1 - x0, h = y1 - y0, sw = Math.max(2, Math.round(Math.min(w, h) * 0.12)), dc = (a, b) => Math.hypot(a[0][0] - b[0][0], a[0][1] - b[0][1], a[0][2] - b[0][2]); return { sl: vs(x0, y0, y1), sr: vs(x1, y0, y1), st: hs(y0, x0, x1), sb: hs(y1, x0, x1), cl: dc(box(x0, y0, x0 + sw, y1), box(x0 - sw, y0, x0, y1)), cr: dc(box(x1 - sw, y0, x1, y1), box(x1, y0, x1 + sw, y1)), ct: dc(box(x0, y0, x1, y0 + sw), box(x0, y0 - sw, x1, y0)), cb: dc(box(x0, y1 - sw, x1, y1), box(x0, y1, x1, y1 + sw)) }; };
+  // sky: flood from the top through pixels like the top rows
+  const top = [0, 0, 0]; for (let x = 0; x < iw; x++) for (let k = 0; k < 3; k++) top[k] += A[(iw + x) * 3 + k] / iw;
+  const sky = new Uint8Array(N), stk = []; for (let x = 0; x < iw; x++) { const p = x; if (Math.hypot(A[p * 3] - top[0], A[p * 3 + 1] - top[1], A[p * 3 + 2] - top[2]) < 16) { sky[p] = 1; stk.push(p); } }
+  while (stk.length) { const p = stk.pop(), x = p % iw, y = (p / iw) | 0; for (const q of [x > 0 ? p - 1 : -1, x < iw - 1 ? p + 1 : -1, y < ih - 1 ? p + iw : -1, y > 0 ? p - iw : -1]) if (q >= 0 && !sky[q] && Math.hypot(A[q * 3] - top[0], A[q * 3 + 1] - top[1], A[q * 3 + 2] - top[2]) < 14 && Gx[q] < tV * 1.5 && Gy[q] < tH * 1.5) { sky[q] = 1; stk.push(q); } }
+  let rl = new Float32Array(iw); for (let x = 0; x < iw; x++) { let y = 0; while (y < ih && sky[y * iw + x]) y++; rl[x] = y; }
+  { const m = new Float32Array(iw); for (let x = 0; x < iw; x++) { const w = []; for (let d = -5; d <= 5; d++) w.push(rl[Math.max(0, Math.min(iw - 1, x + d))]); w.sort((a, b) => a - b); m[x] = w[5]; } rl = m; }
+  // roofline → straight steps: snap each column to the nearest strong row, then merge runs shorter than 6% of the width
+  const snapY = v => { let b = v, bd = 4; for (const y of Y) if (Math.abs(y - v) < bd) { bd = Math.abs(y - v); b = y; } return b; };
+  let steps = []; for (let x = 0; x < iw; x++) { const v = rl[x] < 2 ? 0 : snapY(Math.round(rl[x])); if (steps.length && Math.abs(steps[steps.length - 1].y - v) <= 2) steps[steps.length - 1].x1 = x + 1; else steps.push({ x0: x, x1: x + 1, y: v }); }
+  for (let it = 0; it < 20 && steps.length > 1; it++) { let mi = -1, mw = iw * 0.06; steps.forEach((s, i) => { if (s.x1 - s.x0 < mw) { mw = s.x1 - s.x0; mi = i; } }); if (mi < 0) break; const s = steps[mi], nb = mi === 0 ? steps[1] : mi === steps.length - 1 ? steps[mi - 1] : Math.abs(steps[mi - 1].y - s.y) < Math.abs(steps[mi + 1].y - s.y) ? steps[mi - 1] : steps[mi + 1]; nb.x0 = Math.min(nb.x0, s.x0); nb.x1 = Math.max(nb.x1, s.x1); steps.splice(mi, 1);
+    for (let i = steps.length - 1; i > 0; i--) if (Math.abs(steps[i].y - steps[i - 1].y) <= 2) { steps[i - 1].x1 = steps[i].x1; steps.splice(i, 1); } }
+  const roofAt = new Int32Array(iw); for (const s of steps) for (let x = s.x0; x < s.x1; x++) roofAt[x] = s.y; let skyA = 0; for (let x = 0; x < iw; x++) skyA += roofAt[x]; const hasSky = skyA > N * 0.02;
+  if (!hasSky) roofAt.fill(0);
+  const roofMean = skyA / iw;
+  // ground: the strongest wide horizontal line in the bottom quarter
+  let ground = ih; { let bv = 0.2; for (const y of Y) if (y > ih * 0.72 && y < ih - 3) { const v = hs(y, 0, iw); if (v > bv) { bv = v; ground = y; } } }
+  // openings: rectangles on the candidate grid with edge support on the sides and a colour step to the wall around them
+  const cand = [];
+  for (let a = 0; a < X.length; a++) for (let b = a + 1; b < X.length; b++) { const x0 = X[a], x1 = X[b], w = x1 - x0; if (w < iw * 0.08 || w > iw * 0.3) continue;
+    for (let c = 0; c < Y.length; c++) { const y0 = Y[c]; if (y0 < roofMean * 0.5) continue; for (let d = c + 1; d < Y.length; d++) { const y1 = Y[d], h = y1 - y0; if (h < ih * 0.12 || h > ih * 0.7 || h / w < 0.45 || h / w > 4.5 || y1 > ground + 2) continue;
+      if (y0 < roofMean + ih * 0.08) continue; // an opening has wall above it
+      const sl = vs(x0, y0, y1), sr = vs(x1, y0, y1), st2 = hs(y0, x0, x1), sb = hs(y1, x0, x1); if (Math.min(sl, sr) < 0.5 || st2 < 0.6) continue;
+      const sw = Math.max(2, Math.round(Math.min(w, h) * 0.12)), dc = (a, b) => Math.hypot(a[0][0] - b[0][0], a[0][1] - b[0][1], a[0][2] - b[0][2]);
+      const ct = dc(box(x0, y0, x1, y0 + sw), box(x0, y0 - sw, x1, y0)); if (ct < 9) continue; // the lintel: a clear step at the top
+      const cl = dc(box(x0, y0, x0 + sw, y1), box(x0 - sw, y0, x0, y1)), cr = dc(box(x1 - sw, y0, x1, y1), box(x1, y0, x1 + sw, y1)), cb = dc(box(x0, y1 - sw, x1, y1), box(x0, y1, x1, y1 + sw)); if (Math.max(cl, cr) < 6) continue;
+      const sup = (sl + sr) / 2 * 0.45 + st2 * 0.35 + sb * 0.2, con = (ct + (cl + cr) / 2 + Math.max(cb, 6)) / 3;
+      cand.push({ x0, x1, y0, y1, v: sup * Math.min(1, con / 15) * Math.pow(w * h / N, 0.08) }); } } }
+  // two stacked things (a window over a door): a strong full-width line inside with a colour step across it
+  for (const a of cand) { a.v0 = a.v; for (const y of Y) { if (y < a.y0 + ih * 0.1 || y > a.y1 - ih * 0.1) continue; if (hs(y, a.x0, a.x1) < 0.75) continue; const up = box(a.x0 + 2, Math.max(a.y0, y - 8), a.x1 - 2, y - 1), dn = box(a.x0 + 2, y + 1, a.x1 - 2, Math.min(a.y1, y + 8)); if (Math.hypot(up[0][0] - dn[0][0], up[0][1] - dn[0][1], up[0][2] - dn[0][2]) > 18) { a.v *= 0.6; break; } } }
+  cand.sort((p, q) => q.v - p.v);
+  // prefer the tight opening: a rectangle that holds a smaller, nearly as good one is a wall bay, not an opening
+  const ar = o => (o.x1 - o.x0) * (o.y1 - o.y0), topC = cand.slice(0, 2000); for (const a of topC) a.v1 = a.v;
+  for (const a of topC) for (const b of topC) if (b !== a && ar(b) <= ar(a) * 0.6 && b.v1 >= a.v1 * 0.85 && b.x0 >= a.x0 - 2 && b.x1 <= a.x1 + 2 && b.y0 >= a.y0 - 2 && b.y1 <= a.y1 + 2 && !(Math.abs(b.x0 - a.x0) <= 2 && Math.abs(b.x1 - a.x1) <= 2)) { a.v = a.v1 * 0.55; break; }
+  cand.sort((p, q) => q.v - p.v); const ops = [];
+  for (const r of cand) { if (ops.length >= 8) break; if (r.v < 0.3) break; if (ops.some(o => r.x0 < o.x1 - 1 && r.x1 > o.x0 + 1 && r.y0 < o.y1 - 1 && r.y1 > o.y0 + 1)) continue; ops.push(r); }
+  // facades stack openings in columns: under a window, look for a door in the same column by its edges alone (a white door on pale plaster has little colour step)
+  for (const o of ops.slice()) { if (ops.length >= 9) break; let best = null; for (const y0 of Y) { if (y0 < o.y1 + 1 || y0 > o.y1 + ih * 0.1) continue; for (const y1 of Y) { if (y1 < y0 + ih * 0.15 || y1 > ground + 2) continue;
+      const sl = vs(o.x0, y0, y1), sr = vs(o.x1, y0, y1), st3 = hs(y0, o.x0, o.x1), sb = hs(y1, o.x0, o.x1), v = (sl + sr) / 2 * 0.5 + st3 * 0.25 + sb * 0.25; if (Math.min(sl, sr) < 0.4 || v < 0.6) continue; if (!best || v > best.v) best = { x0: o.x0, x1: o.x1, y0, y1, v }; } }
+    if (!best) continue; const inside = q => q.x0 >= best.x0 - 3 && q.x1 <= best.x1 + 3 && q.y0 >= best.y0 - 3 && q.y1 <= best.y1 + 3, hit = ops.filter(q => q !== o && best.x0 < q.x1 - 1 && best.x1 > q.x0 + 1 && best.y0 < q.y1 - 1 && best.y1 > q.y0 + 1);
+    if (hit.every(inside)) { for (const q of hit) ops.splice(ops.indexOf(q), 1); ops.push(best); } }
+  if (ops.length < 2) return null;
+  // one grid: opening edges within 4 px snap together
+  const snapAll = (vals, t) => { const s = [...new Set(vals)].sort((a, b) => a - b), groups = []; for (const v of s) { const g = groups[groups.length - 1]; if (g && v - g[g.length - 1] <= t) g.push(v); else groups.push([v]); } const m = new Map(); for (const g of groups) { const c = Math.round(g.reduce((a, v) => a + v, 0) / g.length); for (const v of g) m.set(v, c); } return m; };
+  const mx = snapAll(ops.flatMap(o => [o.x0, o.x1]), 4); for (const o of ops) { o.x0 = mx.get(o.x0); o.x1 = mx.get(o.x1); }
+  const my = snapAll(ops.flatMap(o => [o.y0, o.y1]).concat(Y.filter(y => hs(y, 0, iw) > 0.35)), 3); for (const o of ops) { o.y0 = my.get(o.y0); o.y1 = my.get(o.y1); }
+  // cornice lines: wide horizontals on the wall (not an opening edge), at most two
+  const segs = [{ x0: 0, x1: iw }].concat(steps.filter(st3 => st3.x1 - st3.x0 >= iw * 0.2).map(st3 => ({ x0: st3.x0, x1: st3.x1, roof: st3.y }))), corn = [];
+  for (const sg of segs) { const cs = []; for (const y of Y) { if (y < (sg.roof != null ? sg.roof : roofMean) + 3 || y > ground - 6) continue; const v = hs(y, sg.x0, sg.x1); if (v < (sg.roof != null ? 0.55 : 0.4)) continue; if (ops.some(o => o.x0 < sg.x1 && o.x1 > sg.x0 && (Math.abs(o.y0 - y) < 4 || Math.abs(o.y1 - y) < 4))) continue; if (cs.some(c => Math.abs(c.y - y) < ih * 0.08) || corn.some(c => Math.abs(c.y - y) < ih * 0.08 && c.x0 <= sg.x0 + 2 && c.x1 >= sg.x1 - 2)) continue; cs.push({ y, v, x0: sg.x0, x1: sg.x1 }); }
+    cs.sort((a, b) => b.v - a.v); corn.push(...cs.slice(0, sg.roof != null ? 1 : 3)); }
+  // labels: sky, ground, openings, wall cells between the snapped vertical edges and the horizontal lines
+  const pil = []; for (const x of X) { if (x < 3 || x > iw - 4) continue; let y0 = 0; for (let k = Math.max(0, x - 2); k <= Math.min(iw - 1, x + 2); k++) y0 = Math.max(y0, roofAt[k]); if (ground - y0 < ih * 0.25) continue; if (vs(x, y0, ground) < 0.45) continue; if (ops.some(o => Math.abs(o.x0 - x) < 5 || Math.abs(o.x1 - x) < 5) || pil.some(q => Math.abs(q - x) < 5)) continue; pil.push(x); }
+  const xs = [...new Set(ops.flatMap(o => [o.x0, o.x1]).concat(pil, corn.filter(c => c.x0 > 0 || c.x1 < iw).flatMap(c => [c.x0, c.x1]).filter(x => x > 2 && x < iw - 2)))].sort((a, b) => a - b), R = new Int32Array(N).fill(-1); let n = 0; const keyOf = new Map();
+  const SKY = hasSky ? n++ : -1, GROUND = ground < ih ? n++ : -1; ops.forEach(o => o.lab = n++);
+  for (let y = 0; y < ih; y++) for (let x = 0; x < iw; x++) { const p = y * iw + x; if (hasSky && y < roofAt[x]) { R[p] = SKY; continue; } if (y >= ground) { R[p] = GROUND; continue; }
+    const op = ops.find(o => x >= o.x0 && x < o.x1 && y >= o.y0 && y < o.y1); if (op) { R[p] = op.lab; continue; }
+    let bi = 0; while (bi < xs.length && x >= xs[bi]) bi++; const bx0 = bi ? xs[bi - 1] : 0, bx1 = bi < xs.length ? xs[bi] : iw;
+    const cuts = corn.filter(c => c.x0 < bx1 && c.x1 > bx0).map(c => c.y).concat(ops.filter(o => o.x0 < bx1 && o.x1 > bx0).flatMap(o => [o.y0, o.y1])); let ri = 0; for (const c of cuts) if (y >= c) ri++;
+    const k = bi * 1000 + cuts.filter(c => y >= c).reduce((a, c) => a + c, 0) % 997 + ri * 100000; let lab = keyOf.get(k); if (lab == null) { lab = n++; keyOf.set(k, lab); } R[p] = lab; }
+  const kindOld = new Map(); if (hasSky) kindOld.set(SKY, 'sky'); if (GROUND >= 0) kindOld.set(GROUND, 'ground'); ops.forEach(o => kindOld.set(o.lab, 'op'));
+  const cc = components(R, iw, ih), kind = cc.from.map(l => kindOld.get(l) || 'wall'), opOf = cc.from.map(l => ops.find(o => o.lab === l) || null);
+  // glass per element: the wall in one or two calm tones, every opening clearly different from the wall, sky and ground distinct
+  const sum = new Float64Array(cc.n * 4); for (let p = 0; p < N; p++) { const r = cc.R[p]; sum[r * 4] += F[p * 3]; sum[r * 4 + 1] += F[p * 3 + 1]; sum[r * 4 + 2] += F[p * 3 + 2]; sum[r * 4 + 3]++; }
+  // dominant colour of a set of labels (largest of 3 clusters), so a mottled wall reads as its plaster and a barred window as its dark inside
+  const pxOf = new Map(); for (let p = 0; p < N; p++) { const r = cc.R[p]; let a = pxOf.get(r); if (!a) pxOf.set(r, a = []); a.push(p); }
+  const dominant = labs => { const px = labs.flatMap(r => pxOf.get(r) || []), step = Math.max(1, Math.floor(px.length / 3000)), pts = []; for (let i = 0; i < px.length; i += step) pts.push(px[i]); if (!pts.length) return [128, 128, 128];
+    let cs = [0, 0.5, 0.99].map(f => { const q = pts[Math.floor(f * (pts.length - 1))]; return [A[q * 3], A[q * 3 + 1], A[q * 3 + 2]]; }).sort((a, b) => a[0] - b[0]); { const byL = pts.slice().sort((a, b) => A[a * 3] - A[b * 3]); cs = [0.15, 0.5, 0.85].map(f => { const q = byL[Math.floor(f * (byL.length - 1))]; return [A[q * 3], A[q * 3 + 1], A[q * 3 + 2]]; }); }
+    let asg = new Int32Array(pts.length); for (let it = 0; it < 8; it++) { const acc = cs.map(() => [0, 0, 0, 0, 0, 0, 0]); pts.forEach((q, i) => { let b = 0, bd = 1e9; cs.forEach((c, k) => { const d = (A[q * 3] - c[0]) ** 2 + (A[q * 3 + 1] - c[1]) ** 2 + (A[q * 3 + 2] - c[2]) ** 2; if (d < bd) { bd = d; b = k; } }); asg[i] = b; const a = acc[b]; a[0] += A[q * 3]; a[1] += A[q * 3 + 1]; a[2] += A[q * 3 + 2]; a[3]++; a[4] += F[q * 3]; a[5] += F[q * 3 + 1]; a[6] += F[q * 3 + 2]; }); cs = cs.map((c, k) => acc[k][3] ? [acc[k][0] / acc[k][3], acc[k][1] / acc[k][3], acc[k][2] / acc[k][3]] : c); if (it === 7) { const big = acc.reduce((a, b) => b[3] > a[3] ? b : a); return [big[4] / big[3], big[5] / big[3], big[6] / big[3]]; } } };
+  const mean = r => [sum[r * 4] / sum[r * 4 + 3], sum[r * 4 + 1] / sum[r * 4 + 3], sum[r * 4 + 2] / sum[r * 4 + 3]], dE = (a, b) => { const p = gLab(...a), q = gLab(...b); return Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]); };
+  const nearestLab = c => { const l = gLab(...c); let b = null, bd = 1e9; for (const q of GLASS_PALETTE) { const g = gLab(q[1], q[2], q[3]), d = Math.hypot(l[0] - g[0], (l[1] - g[1]) * 1.2, (l[2] - g[2]) * 1.2); if (d < bd) { bd = d; b = q; } } return { name: b[0], rgb: [b[1], b[2], b[3]] }; };
+  const walls = [...Array(cc.n).keys()].filter(r => kind[r] === 'wall'), col = new Array(cc.n);
+  let cA = null, cB = null; if (walls.length) { const tot = walls.reduce((a, r) => a + sum[r * 4 + 3], 0), avg = [0, 1, 2].map(k => walls.reduce((a, r) => a + sum[r * 4 + k], 0) / tot);
+    cA = avg; cB = walls.map(mean).sort((a, b) => dE(b, avg) - dE(a, avg))[0]; for (let it = 0; it < 8; it++) { const ga = [0, 0, 0, 0], gb = [0, 0, 0, 0]; for (const r of walls) { const m = mean(r), g = dE(m, cA) <= dE(m, cB) ? ga : gb; for (let k = 0; k < 3; k++) g[k] += m[k] * sum[r * 4 + 3]; g[3] += sum[r * 4 + 3]; } if (ga[3]) cA = ga.slice(0, 3).map(v => v / ga[3]); if (gb[3]) cB = gb.slice(0, 3).map(v => v / gb[3]); }
+    cB = cA; } // one calm wall tone
+  const gA = walls.filter(r => !cB || dE(mean(r), cA) <= dE(mean(r), cB)), gB = walls.filter(r => !gA.includes(r)), dA = dominant(gA), dB2 = gB.length ? dominant(gB) : dA;
+  const wallGlass = new Set(); for (const r of walls) { col[r] = nearestLab(gA.includes(r) ? dA : dB2).rgb; wallGlass.add(col[r].join()); }
+  const wallRGB = [...wallGlass].map(s2 => s2.split(',').map(Number)), apart = (c, t) => { let g = nearestLab(c).rgb; if (wallRGB.every(w => dE(g, w) >= t)) return g; let best = null, bd = 1e9; for (const q of GLASS_PALETTE) { const rgb = [q[1], q[2], q[3]]; if (wallRGB.some(w => dE(rgb, w) < t)) continue; const d = dE(c, rgb); if (d < bd) { bd = d; best = rgb; } } return best || g; };
+  for (let r = 0; r < cc.n; r++) if (kind[r] !== 'wall') col[r] = apart(dominant([r]), kind[r] === 'op' ? 20 : 16);
+  // bars / planks / courses inside each opening → came lines, evenly spaced so they read as made, not traced
+  const overlay = [];
+  for (const o of ops) { const w = o.x1 - o.x0, h = o.y1 - o.y0, mxI = Math.max(1, Math.round(w * 0.1)), myI = Math.max(1, Math.round(h * 0.1)); if (w < 8 || h < 8) continue;
+    const pv = [], ph = []; for (let x = o.x0 + mxI; x < o.x1 - mxI; x++) { let s2 = 0; for (let y = o.y0 + myI; y < o.y1 - myI; y++) s2 += Gx[y * iw + x]; pv.push([x, s2 / (h - 2 * myI)]); }
+    for (let y = o.y0 + myI; y < o.y1 - myI; y++) { let s2 = 0; for (let x = o.x0 + mxI; x < o.x1 - mxI; x++) s2 += Gy[y * iw + x]; ph.push([y, s2 / (w - 2 * mxI)]); }
+    const peaks = pr => { const m = pr.reduce((a, q) => a + q[1], 0) / pr.length; return { m, n: pr.filter((q, i) => i > 0 && i < pr.length - 1 && q[1] > pr[i - 1][1] && q[1] >= pr[i + 1][1] && q[1] > m * 1.15).length, best: pr.reduce((a, q) => q[1] > a[1] ? q : a, [0, 0]) }; };
+    const PV = peaks(pv), PH = peaks(ph), eV = PV.m, eH = PH.m, even = (a, b, n) => [...Array(n).keys()].map(i => Math.round(a + (b - a) * (i + 1) / (n + 1)));
+    o.type = 'solid'; const [oc] = box(o.x0, o.y0, o.x1, o.y1), wl = gLab(...dA), busy = eV + eH > (tV + tH) * 0.55, warm = oc[1] > 12 && oc[2] > 18;
+    const dl = gLab(...dominant([cc.R[Math.floor((o.y0 + o.y1) / 2) * iw + Math.floor((o.x0 + o.x1) / 2)]]))[0];
+    if (!warm && oc[0] < wl[0] - 12 && dl < wl[0] - 12 && eV / tV + eH / tH >= 1 && h / w <= 1.6) { o.type = 'barred'; for (const c of even(o.x0, o.x1, Math.max(2, Math.min(5, Math.round(w / (ppi * 0.42)) - 1)))) overlay.push([[c, o.y0], [c, o.y1]]);
+      const rails = ph.filter((q, i) => i > 0 && i < ph.length - 1 && q[1] > ph[i - 1][1] && q[1] >= ph[i + 1][1] && q[1] > eH * 1.5 && q[0] > o.y0 + h * 0.15 && q[0] < o.y1 - h * 0.15).sort((a, b) => b[1] - a[1]), rk = []; for (const q of rails) if (rk.length < 2 && rk.every(u => Math.abs(u - q[0]) > h * 0.2)) rk.push(q[0]); for (const y of rk) overlay.push([[o.x0, y], [o.x1, y]]);
+      // the window's frame: a head moulding just above and a sill just below become came lines a little wider than the window
+      for (const [dir, yb] of [[-1, o.y0], [1, o.y1]]) { let best = null; for (let d = 2; d <= 8; d++) { const y = yb + dir * d; if (y < 1 || y >= ih - 1) continue; const v = hs(y, Math.max(0, o.x0 - 2), Math.min(iw, o.x1 + 2)); if (v > 0.6 && (!best || v > best.v)) best = { y, v }; } if (best) overlay.push([[Math.max(0, o.x0 - 3), best.y], [Math.min(iw - 1, o.x1 + 3), best.y]]); } }
+    else if (warm && PH.n >= 3) { o.type = 'courses'; for (const c of even(o.y0, o.y1, Math.max(2, Math.min(4, Math.round(h / (ppi * 0.6)) - 1)))) overlay.push([[o.x0, c], [o.x1, c]]); }
+    else if (h / w > 1.3) { o.type = 'door'; const pk = pv.filter((q, i) => i > 0 && i < pv.length - 1 && q[1] > pv[i - 1][1] && q[1] >= pv[i + 1][1] && q[1] > tV * 0.9).sort((a, b) => b[1] - a[1]), keep = []; for (const q of pk) if (keep.length < 2 && keep.every(u => Math.abs(u - q[0]) > w * 0.25)) keep.push(q[0]);
+      const pl = keep.length === 2 ? keep.sort((a, b) => a - b) : keep.length === 1 ? [keep[0], keep[0] - o.x0 > w / 2 ? Math.round(o.x0 + (keep[0] - o.x0) / 2) : Math.round(keep[0] + (o.x1 - keep[0]) / 2)].sort((a, b) => a - b) : even(o.x0, o.x1, 2); for (const c of pl) overlay.push([[c, o.y0], [c, o.y1]]); } }
+  for (let r = 0; r < cc.n; r++) { const o = opOf[r]; if (!o || o.type === 'solid' || gLab(...col[r])[0] >= 30) continue; // came lines must show on the glass
+    let b = null, bd = 1e9; for (const q of GLASS_PALETTE) { const rgb = [q[1], q[2], q[3]], g = gLab(...rgb); if (g[0] < 30 || wallRGB.some(w2 => dE(rgb, w2) < 20)) continue; const d = dE(col[r], rgb); if (d < bd) { bd = d; b = rgb; } } if (b) col[r] = b; }
+  for (let r = 0; r < cc.n; r++) { const o = opOf[r]; if (o && o.type === 'solid' && dE(dominant([r]), dA) < 16) { kind[r] = 'wall'; col[r] = nearestLab(dA).rgb; o.type = 'wall'; } }
+  // main structural lines (roofline, cornices, opening edges): long straight runs — the outline a viewer reads the building by
+  const nV2 = new Uint8Array(N), nH2 = new Uint8Array(N); for (let y = 1; y < ih - 1; y++) for (let x = 1; x < iw - 1; x++) { const p = y * iw + x; if (Gx[p] > tV && Gx[p] >= Gx[p - 1] && Gx[p] > Gx[p + 1] && Gx[p] >= Gy[p] * 0.7) nV2[p] = 1; if (Gy[p] > tH && Gy[p] >= Gy[p - iw] && Gy[p] > Gy[p + iw] && Gy[p] >= Gx[p] * 0.7) nH2[p] = 1; }
+  const main = new Uint8Array(N); for (let x = 1; x < iw - 1; x++) { let run = 0, gap = 0; for (let y = 0; y <= ih; y++) { const on = y < ih && (nV2[y * iw + x] || nV2[y * iw + x - 1] || nV2[y * iw + x + 1]); if (on) { run += gap + 1; gap = 0; } else if (run && gap < 2 && y < ih) { gap++; continue; } else { if (run >= ih * 0.15) for (let k = y - gap - run; k < y - gap; k++) if (nV2[k * iw + x]) main[k * iw + x] = 1; run = 0; gap = 0; } } }
+  for (let y = 1; y < ih - 1; y++) { let run = 0, gap = 0; for (let x = 0; x <= iw; x++) { const on = x < iw && (nH2[y * iw + x] || nH2[(y - 1) * iw + x] || nH2[(y + 1) * iw + x]); if (on) { run += gap + 1; gap = 0; } else if (run && gap < 2 && x < iw) { gap++; continue; } else { if (run >= iw * 0.15) for (let k = x - gap - run; k < x - gap; k++) if (nH2[y * iw + k]) main[y * iw + k] = 1; run = 0; gap = 0; } } }
+  if (false) for (let x = 0; x < iw; x++) { let run = 0; for (let y = 0; y <= ih; y++) { if (y < ih && bV[y * iw + x]) run++; else { if (run >= ih * 0.1) for (let k = y - run; k < y; k++) main[k * iw + x] = 1; run = 0; } } }
+  for (let y = 0; y < ih; y++) { let run = 0; for (let x = 0; x <= iw; x++) { if (x < iw && bH[y * iw + x]) run++; else { if (run >= iw * 0.1) for (let k = x - run; k < x; k++) main[y * iw + k] = 1; run = 0; } } }
+  // long structural lines that no lead follows yet (parapet mouldings, pilaster edges, an arch's sides) → came lines
+  { const cov = new Uint8Array(N); const mark = (x, y) => { for (let j = -2; j <= 2; j++) for (let i = -2; i <= 2; i++) { const X2 = x + i, Y2 = y + j; if (X2 >= 0 && Y2 >= 0 && X2 < iw && Y2 < ih) cov[Y2 * iw + X2] = 1; } };
+    for (let y = 0; y < ih; y++) for (let x = 0; x < iw; x++) { const p = y * iw + x, r = cc.R[p]; if ((x < iw - 1 && cc.R[p + 1] !== r) || (y < ih - 1 && cc.R[p + iw] !== r)) mark(x, y); }
+    for (const l of overlay) { const [[ax, ay], [bx, by]] = l, n = Math.ceil(Math.hypot(bx - ax, by - ay)) + 1; for (let t = 0; t <= n; t++) mark(Math.round(ax + (bx - ax) * t / n), Math.round(ay + (by - ay) * t / n)); }
+    const runs = [], scan = (len, other, at, minL, horiz) => { for (let a = 2; a < other - 2; a++) { let s0 = -1, gap = 0, unc = 0; for (let b = 0; b <= len; b++) { const p = horiz ? a * iw + b : b * iw + a, ln = b < len && (horiz ? nH2[p] || nH2[p - iw] || nH2[p + iw] : nV2[p] || nV2[p - 1] || nV2[p + 1]) && !(horiz ? sky[p] : false), on = ln && !cov[p];
+      if (ln) { if (s0 < 0) { s0 = b; unc = 0; } gap = 0; if (on) unc++; } else if (s0 >= 0 && gap < 2 && b < len) gap++; else { if (s0 >= 0 && b - gap - s0 >= minL && unc >= (b - gap - s0) * 0.5) runs.push({ horiz, a, b0: s0, b1: b - gap, len: unc }); s0 = -1; gap = 0; } } } };
+    scan(iw, ih, 0, iw * 0.2, true); scan(ih, iw, 0, ih * 0.2, false); runs.sort((p, q) => q.len - p.len); const took = { true: [], false: [] };
+    for (const r of runs) { const t = took[r.horiz]; if (t.length >= 5 || t.some(u => Math.abs(u.a - r.a) < 4 && u.b0 < r.b1 && u.b1 > r.b0)) continue; t.push(r); overlay.push(r.horiz ? [[r.b0, r.a], [r.b1, r.a]] : [[r.a, r.b0], [r.a, r.b1]]); } }
+  return { probe, cand, X, Y, col, kind, main, R: cc.R, n: cc.n, overlay, ops, sky: hasSky, ground: ground < ih, groundY: ground, cornices: corn.map(c => c.y), steps };
+}
+/* Calm background: k-means on a heavily blurred photo (background pixels only), labels smoothed with a big majority filter so the
+   borders become long sweeping curves; small blobs are absorbed; returns a label per pixel (subject pixels = -1). */
+function calmBackground(A, mask, W, H, { pieces = 5, maxA = Infinity } = {}) {
+  const N = W * H, r = Math.max(4, Math.round(Math.max(W, H) / 14)), ch = [0, 1, 2].map(c => { const a = new Float32Array(N), m = new Float32Array(N); for (let p = 0; p < N; p++) if (!mask[p]) { a[p] = A[p * 3 + c]; m[p] = 1; } const ba = blur1(a, W, H, r), bm = blur1(m, W, H, r); for (let p = 0; p < N; p++) ba[p] = bm[p] > 1e-3 ? ba[p] / bm[p] : 0; return ba; });
+  const smp = [], stp = Math.max(1, Math.floor(N / 6000)); for (let p = 0; p < N; p += stp) if (!mask[p]) smp.push(ch[0][p], ch[1][p], ch[2][p]);
+  const k = Math.max(2, Math.min(4, pieces - 2)), C = smp.length > 30 ? kmeans(new Float32Array(smp), k, 12, 11) : [[50, 0, 0]];
+  let L = new Int32Array(N); for (let p = 0; p < N; p++) L[p] = mask[p] ? -1 : nearestC(C, ch[0][p], ch[1][p], ch[2][p]);
+  // majority smoothing (per-label blur) → sweeping borders
+  const sr = Math.max(3, Math.round(r * 0.8)); { const acc = C.map((_, i) => { const a = new Float32Array(N); for (let p = 0; p < N; p++) a[p] = L[p] === i ? 1 : 0; return blur1(a, W, H, sr); }); for (let p = 0; p < N; p++) if (!mask[p]) { let b = 0; for (let i = 1; i < C.length; i++) if (acc[i][p] > acc[b][p]) b = i; L[p] = b; } }
+  // connected blobs; absorb small ones into the neighbour they share most border with
+  for (let round = 0; round < 6; round++) { const key = new Int32Array(N); for (let p = 0; p < N; p++) key[p] = L[p] + 1; const cc = components(key, W, H), area = new Float64Array(cc.n); for (let p = 0; p < N; p++) area[cc.R[p]]++;
+    let bgA = 0; for (let p = 0; p < N; p++) if (!mask[p]) bgA++; const small = i => cc.from[i] > 0 && area[i] < bgA / (pieces * 2.2); const nb = new Map();
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const p = y * W + x, a = cc.R[p]; if (!small(a)) continue; for (const q of [x < W - 1 ? p + 1 : -1, y < H - 1 ? p + W : -1, x > 0 ? p - 1 : -1, y > 0 ? p - W : -1]) { if (q < 0) continue; const b = cc.R[q]; if (b === a || cc.from[b] === 0) continue; const m = nb.get(a) || new Map(); m.set(b, (m.get(b) || 0) + 1); nb.set(a, m); } }
+    if (!nb.size) { L = new Int32Array(N); for (let p = 0; p < N; p++) L[p] = cc.from[cc.R[p]] === 0 ? -1 : cc.R[p]; break; }
+    const to = new Map(); for (const [a, m] of nb) { let bb = -1, bv = -1; for (const [b, v] of m) if (v > bv) { bv = v; bb = b; } to.set(a, bb); }
+    const lab = new Int32Array(cc.n); for (let i = 0; i < cc.n; i++) lab[i] = i; for (const [a, b] of to) lab[a] = to.has(b) && to.get(b) === a && b < a ? a : b;
+    L = new Int32Array(N); for (let p = 0; p < N; p++) L[p] = cc.from[cc.R[p]] === 0 ? -1 : lab[cc.R[p]]; }
+  // oversize blobs: split in two by colour + position (curved, follows the photo's soft light) until they fit
+  for (let it = 0; it < 6; it++) { const area = new Map(); for (let p = 0; p < N; p++) if (L[p] >= 0) area.set(L[p], (area.get(L[p]) || 0) + 1); let big = -1, ba = maxA; for (const [l, a] of area) if (a > ba) { ba = a; big = l; } if (big < 0) break;
+    const pts = [], idx = []; for (let p = 0; p < N; p++) if (L[p] === big) { idx.push(p); } const sc = 60 / Math.max(W, H), st2 = Math.max(1, Math.floor(idx.length / 4000)); for (let j = 0; j < idx.length; j += st2) { const p = idx[j]; pts.push(ch[0][p] * 0.5, ch[1][p] * 0.5, ch[2][p] * 0.5, (p % W) * sc, ((p / W) | 0) * sc); }
+    const C2 = kmeans5(pts, 2), nl = Math.max(...area.keys()) + 1, tmp = new Float32Array(N); for (const p of idx) { const f = [ch[0][p] * 0.5, ch[1][p] * 0.5, ch[2][p] * 0.5, (p % W) * sc, ((p / W) | 0) * sc], d = C2.map(c => c.reduce((s, v, i) => s + (v - f[i]) ** 2, 0)); tmp[p] = d[1] < d[0] ? 1 : 0; }
+    const bt = blur1(tmp, W, H, Math.max(3, Math.round(r * 0.8))); for (const p of idx) if (bt[p] > 0.5) L[p] = nl; }
+  return L;
+}
+function kmeans5(pts, k) { const n = pts.length / 5, C = []; for (let i = 0; i < k; i++) C.push(pts.slice(Math.floor((i + 0.5) * n / k) * 5, Math.floor((i + 0.5) * n / k) * 5 + 5));
+  for (let it = 0; it < 12; it++) { const acc = C.map(() => [0, 0, 0, 0, 0, 0]); for (let j = 0; j < n; j++) { let b = 0, bd = Infinity; for (let c = 0; c < k; c++) { let d = 0; for (let i = 0; i < 5; i++) d += (pts[j * 5 + i] - C[c][i]) ** 2; if (d < bd) { bd = d; b = c; } } for (let i = 0; i < 5; i++) acc[b][i] += pts[j * 5 + i]; acc[b][5]++; } acc.forEach((a, c) => { if (a[5]) for (let i = 0; i < 5; i++) C[c][i] = a[i] / a[5]; }); } return C; }
+/* Perch / branch / wire under a subject: the dominant near-horizontal straight line among band contours (Hough), kept where it is
+   continuously supported; extended to the panel edge when it nearly reaches it. Returns [[x,y],[x,y]] in image px or null. */
+function houghPerch(thin, band, W, H, ppi, minSpan, footY = null, sig = 1e9) {
+  const pts = []; for (let p = 0; p < W * H; p++) if (thin[p] && band[p]) pts.push([p % W, (p / W) | 0]); if (pts.length < 20) return null;
+  let best = null; for (let deg = -40; deg <= 40; deg += 2) { const t = deg * Math.PI / 180, c = Math.cos(t), sn = Math.sin(t), acc = new Map();
+    for (const [x, y] of pts) { const r = Math.round((y * c - x * sn) / 1.5), w = footY == null ? 1 : Math.exp(-((y - footY) ** 2) / (2 * sig * sig)); acc.set(r, (acc.get(r) || 0) + w); }
+    for (const [r, v] of acc) if (!best || v > best.v) best = { v, t, r: r * 1.5 }; }
+  const c = Math.cos(best.t), sn = Math.sin(best.t), on = pts.filter(([x, y]) => Math.abs(y * c - x * sn - best.r) <= 2).map(([x, y]) => x * c + y * sn).sort((a, b) => a - b);
+  let s0 = 0, bs = 0, be = 0; for (let i = 1; i <= on.length; i++) if (i === on.length || on[i] - on[i - 1] > ppi * 0.6) { if (on[i - 1] - on[s0] > be - bs) { bs = on[s0]; be = on[i - 1]; } s0 = i; }
+  const cnt = on.filter(u => u >= bs && u <= be).length; if (be - bs < minSpan * 0.6 || cnt < (be - bs) * 0.45) return null;
+  const at = u => [u * c - best.r * sn, u * sn + best.r * c]; let a = at(bs), b = at(be);
+  const ext = (q, dir) => { for (let k = 0; k < ppi * 1.2; k++) { const nq = [q[0] + dir * c, q[1] + dir * sn]; if (nq[0] <= 0 || nq[0] >= W - 1 || nq[1] <= 0 || nq[1] >= H - 1) return nq; q = nq; } return null; };
+  const ea = ext(a, -1), eb = ext(b, 1); if (ea) a = ea; if (eb) b = eb; return [a, b];
 }
 /* SLIC superpixels that never cross the subject outline */
 function slic(A, W, H, S, mask, m = 9, iters = 6) {
@@ -422,6 +691,28 @@ async function glassTapBox(src, fx, fy) {
   const bw = Math.max(x1 - x0, W * 0.06), bh = Math.max(y1 - y0, H * 0.06), cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, px = bw * 0.6, py = bh * 0.85;
   return [Math.max(0, (cx - bw / 2 - px) / W), Math.max(0, (cy - bh / 2 - py) / H), Math.min(1, (cx + bw / 2 + px) / W), Math.min(1, (cy + bh / 2 + py) / H)].map(v => Math.round(v * 1000) / 1000);
 }
+/* Auto subject (no tap): only when the usual subject finder fails (busy scene: saliency covers > 40% of the frame, or nothing stands
+   out). Looks for a compact, colour-distinct blob (e.g. a robin's orange breast against a green garden and a fence) and builds the
+   same box a tap there would. Returns { box, at:[fx,fy] }, { box: null, busy: true } (busy scene, nothing found) or null (normal finder is fine). */
+async function glassAutoSubject(src) {
+  const im = typeof src === 'string' ? await loadImg(src) : src, w0 = im.naturalWidth || im.width, h0 = im.naturalHeight || im.height, s = Math.min(1, 160 / Math.max(w0, h0)), W = Math.max(8, Math.round(w0 * s)), H = Math.max(8, Math.round(h0 * s));
+  const c = document.createElement('canvas'); c.width = W; c.height = H; const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(im, 0, 0, W, H); const d = g.getImageData(0, 0, W, H).data, N = W * H, F = new Float32Array(N * 3); for (let i = 0; i < N; i++) { F[i * 3] = d[i * 4]; F[i * 3 + 1] = d[i * 4 + 1]; F[i * 3 + 2] = d[i * 4 + 2]; }
+  const A = bilateral(toLab(F, N), W, H, 1, 10, 2), E = sobelEdges(A, W, H), m = subjectMask(F, A, E, W, H, {}, []);
+  const axA = axisEdgeFrac(A, E, W, H); if (m.how === 'backdrop' || (m.how === 'saliency' && m.frac <= 0.4) || axA >= 0.5) return null;
+  if (axA >= 0.4) { const fzA = facadeLayout(A, F, W, H, W / 12); if (fzA && fzA.ops.filter(q => q.type && q.type !== 'wall').length >= 3) return null; } // a building facade: no single subject
+  const smp = []; for (let p = 0; p < N; p += 2) smp.push(A[p * 3], A[p * 3 + 1], A[p * 3 + 2]);
+  const KC = kmeans(new Float32Array(smp), 12, 12, 9), kw = new Float64Array(KC.length), kl = new Int32Array(N); for (let p = 0; p < N; p++) { kl[p] = nearestC(KC, A[p * 3], A[p * 3 + 1], A[p * 3 + 2]); kw[kl[p]]++; }
+  const rar = KC.map((c1, i) => KC.reduce((a, d2, j) => a + kw[j] / N * Math.hypot(c1[0] - d2[0], c1[1] - d2[1], c1[2] - d2[2]), 0)), rmx = Math.max(...rar) || 1;
+  const sc = new Float32Array(N); for (let p = 0; p < N; p++) sc[p] = rar[kl[p]] / rmx * (0.4 + 0.6 * Math.min(1, Math.hypot(A[p * 3 + 1], A[p * 3 + 2]) / 40));
+  const sb = blur1(sc, W, H, 1); let mx = 0; for (let p = 0; p < N; p++) mx = Math.max(mx, sb[p]); const bin = new Uint8Array(N); for (let p = 0; p < N; p++) bin[p] = sb[p] > mx * 0.62 ? 1 : 0;
+  const cc = components(bin, W, H), st = new Map(); for (let p = 0; p < N; p++) { const r = cc.R[p]; if (cc.from[r] !== 1) continue; const x = p % W, y = (p / W) | 0; let o = st.get(r); if (!o) st.set(r, o = { n: 0, s: 0, x0: W, y0: H, x1: 0, y1: 0, sx: 0, sy: 0, l: [0, 0, 0] }); o.n++; o.s += sb[p]; o.sx += x; o.sy += y; o.x0 = Math.min(o.x0, x); o.x1 = Math.max(o.x1, x); o.y0 = Math.min(o.y0, y); o.y1 = Math.max(o.y1, y); for (let k = 0; k < 3; k++) o.l[k] += A[p * 3 + k]; }
+  let best = null; const all = []; for (const [r, o] of st) { if (o.n < N * 0.002 || o.n > N * 0.15) continue; const comp = o.n / ((o.x1 - o.x0 + 1) * (o.y1 - o.y0 + 1)); if (comp < 0.35) continue;
+    const lab = o.l.map(v => v / o.n), cx = o.sx / o.n, cy = o.sy / o.n, rr = Math.sqrt(o.n) * 0.9; let rs = [0, 0, 0], rn = 0; for (let y = Math.max(0, Math.round(o.y0 - rr)); y <= Math.min(H - 1, Math.round(o.y1 + rr)); y++) for (let x = Math.max(0, Math.round(o.x0 - rr)); x <= Math.min(W - 1, Math.round(o.x1 + rr)); x++) { const p = y * W + x; if (cc.R[p] === r) continue; for (let k = 0; k < 3; k++) rs[k] += A[p * 3 + k]; rn++; }
+    const con = rn ? Math.hypot(...rs.map((v, k) => v / rn - lab[k])) : 0; if (con < 18) continue; const v = o.s / o.n * Math.sqrt(comp) * Math.sqrt(o.n / N) * con; const cand = { v, fx: cx / W, fy: cy / H, lab, n: o.n }; all.push(cand); if (!best || v > best.v) best = cand; }
+  // two alike blobs side by side (a pair of eyes) are features of a larger subject, not the subject
+  if (best && all.some(q => q !== best && Math.hypot(...q.lab.map((v, k) => v - best.lab[k])) < 15 && Math.max(q.n, best.n) / Math.min(q.n, best.n) < 2.5 && Math.abs(q.fy - best.fy) < 0.12 && Math.abs(q.fx - best.fx) > 0.08)) return null;
+  if (!best) return { box: null, busy: true }; return { box: await glassTapBox(im, best.fx, best.fy), at: [best.fx, best.fy] };
+}
 /* ---------- main build ---------- */
 function glassDefaults() { return { colors: 6, simplicity: 4, detail: 7, zoom: true, style: 'auto', smallFeat: 'pieces', paint: true, widthIn: 12, unit: 'in', focus: true, frame: true, frameIn: 1, line: 'foil116', frameGlass: '' }; }
 function glassGeometry(o, aspect) { // aspect = h/w of image
@@ -444,22 +735,36 @@ function glassBuild(img, o) {
   const minA = rules.minAreaIn * ppi * ppi, minW = rules.minWidthIn * ppi, det = Math.max(1, Math.min(10, +o.detail || 6)), sim = Math.max(1, Math.min(10, +o.simplicity || 5));
   // subject (with optional Grok box, given in photo coords → panel coords via the crop)
   const cr = img.crop || [0, 0, 1, 1], toIn = b => [(b[0] - cr[0]) / cr[2], (b[1] - cr[1]) / cr[3], (b[2] - cr[0]) / cr[2], (b[3] - cr[1]) / cr[3]].map(v => Math.max(0, Math.min(1, v)));
-  const sm = o.focus ? subjectMask(F, A, E, iw, ih, { subjectBox: o.subjectBox ? toIn(o.subjectBox) : null }, notes) : { mask: new Uint8Array(n0).fill(1), how: 'off', frac: 1 };
+  let ih2 = 0; for (let i = 0; i < img.data.length; i += 997) ih2 = (ih2 * 31 + img.data[i]) | 0;
+  const sm = o.focus ? subjectMask(F, A, E, iw, ih, { subjectBox: o.subjectBox ? toIn(o.subjectBox) : null, cacheKey: cr.join(',') + ':' + ih2 + ':' + rules.blur }, notes) : { mask: new Uint8Array(n0).fill(1), how: 'off', frac: 1 };
   let mask = sm.mask, featMap = null;
   if (o.features && o.features.length) { featMap = new Uint8Array(n0); for (const f of o.features) { const bx = toIn(f.box); for (let y = Math.floor(bx[1] * ih); y < Math.ceil(bx[3] * ih); y++) for (let x = Math.floor(bx[0] * iw); x < Math.ceil(bx[2] * iw); x++) featMap[y * iw + x] = 1; } }
   // superpixels → merge across weak edges (detail on subject, big simple pieces behind)
   const subjT = minA * (1 + (10 - det) * 0.15), featT = minA, bgT = minA * (2.5 + sim * 0.5);
   const S0 = Math.max(4, Math.min(9, Math.round(Math.sqrt(minA) * 0.3)));
   const Cm = contourMap(A, E, iw, ih), Ec = new Float32Array(n0); for (let p = 0; p < n0; p++) Ec[p] = Cm[p] ? 1 : E[p] * 0.25;
-  const axf = axisEdgeFrac(A, E, iw, ih), geo = o.style === 'geometric' || (o.style !== 'organic' && axf >= 0.5);
+  const axf = axisEdgeFrac(A, E, iw, ih), fz0 = o.style !== 'organic' && o.facade !== false && sm.how !== 'backdrop' && (o.style === 'geometric' || axf >= 0.4) ? facadeLayout(A, F, iw, ih, ppi) : null;
+  // a building: mostly straight edges, or nearly so and a facade (sky, windows, doors) is actually found
+  const geo = o.style === 'geometric' || (o.style !== 'organic' && (axf >= 0.5 || (!!fz0 && fz0.ops.filter(q => q.type && q.type !== 'wall').length >= 3)));
   if (geo && o.style !== 'geometric') notes.push('Straight-line style chosen automatically (lots of horizontal/vertical edges, e.g. a building) — windows and doors become rectangles. Switch Style to Organic for curves.');
   if (geo && sm.how !== 'backdrop') { sm.mask.fill(1); sm.how = 'off'; sm.frac = 1; }
   const advMinIn = Math.max(0.35, rules.minAreaIn * 0.18), advMin = o.smallFeat === 'pieces' ? advMinIn * ppi * ppi : 0, advDE = 22;
   const sp = geo ? xyCut(A, iw, ih, Math.max(3, Math.round(Math.sqrt(minA) * 0.35)), Math.round(n0 / (S0 * S0 * 2)), 0.5) : slic(A, iw, ih, S0, mask, 6);
-  const rm = ragMerge(sp.R, sp.n, A, Ec, mask, iw, ih, { subjT, featT, bgT, crumb: minA * 0.25, absMin: minA * 0.6, weakT: 0.15, strongT: 0.45 - det * 0.015, hardCap: Math.round(n0 / (minA * 1.5)), subjMax: subjT * 4, bgMax: rules.maxAreaIn * ppi * ppi, keepSil: sm.how !== 'none' && sm.how !== 'off', featMap, advMin, advDE, geo });
+  // calm background behind a found subject: a few large sweeping pieces from heavily blurred colour areas, so the subject pops
+  const calm = !geo && o.calmBg !== false && !!o.subjectBox && ['grok', 'box'].includes(sm.how) && sm.frac < 0.45;
+  if (calm) { const bgL = calmBackground(A, mask, iw, ih, { maxA: rules.maxAreaIn * ppi * ppi * 0.9, pieces: Math.max(4, Math.min(7, Math.round(n0 * (1 - sm.frac) / (rules.maxAreaIn * ppi * ppi * 0.55)))) }), key = new Int32Array(n0); let mx = 0; for (let p = 0; p < n0; p++) mx = Math.max(mx, sp.R[p]);
+    for (let p = 0; p < n0; p++) key[p] = mask[p] ? sp.R[p] : mx + 1 + bgL[p]; const c = components(key, iw, ih); sp.R = c.R; sp.n = c.n; }
+  const fz = geo ? fz0 : null;
+  const rm = fz ? { R: fz.R, n: fz.n } : ragMerge(sp.R, sp.n, A, Ec, mask, iw, ih, { subjT, featT, bgT, crumb: minA * 0.25, absMin: minA * 0.6, weakT: 0.15, strongT: 0.45 - det * 0.015, hardCap: Math.round(n0 / (minA * 1.5)), subjMax: subjT * 4, bgMax: rules.maxAreaIn * ppi * ppi, keepSil: sm.how !== 'none' && sm.how !== 'off', featMap, advMin, advDE, geo });
   const RN = rm.n, rs3 = new Float64Array(RN * 3), ra = new Float64Array(RN), rsub = new Float64Array(RN);
   for (let p = 0; p < n0; p++) { const r = rm.R[p]; ra[r]++; rs3[r * 3] += F[p * 3]; rs3[r * 3 + 1] += F[p * 3 + 1]; rs3[r * 3 + 2] += F[p * 3 + 2]; rsub[r] += mask[p]; }
-  const colors = [...Array(RN).keys()].map(r => [rs3[r * 3] / ra[r], rs3[r * 3 + 1] / ra[r], rs3[r * 3 + 2] / ra[r]]), subjOfLab = [...Array(RN).keys()].map(r => rsub[r] / ra[r] > 0.5 ? 1 : 0);
+  const colors = fz ? fz.col.map(c => c.slice()) : [...Array(RN).keys()].map(r => [rs3[r * 3] / ra[r], rs3[r * 3 + 1] / ra[r], rs3[r * 3 + 2] / ra[r]]), subjOfLab = [...Array(RN).keys()].map(r => rsub[r] / ra[r] > 0.5 ? 1 : 0);
+  if (calm) { // small subject pieces on the outline that look like the background next to them (a pole, a bit of fence) belong to the background
+    const lab3 = new Float64Array(RN * 3); for (let p = 0; p < n0; p++) { const r = rm.R[p]; lab3[r * 3] += A[p * 3]; lab3[r * 3 + 1] += A[p * 3 + 1]; lab3[r * 3 + 2] += A[p * 3 + 2]; }
+    const lb = r => [lab3[r * 3] / ra[r], lab3[r * 3 + 1] / ra[r], lab3[r * 3 + 2] / ra[r]], dB = new Float64Array(RN).fill(1e9), bN = new Int32Array(RN).fill(-1), dS = new Float64Array(RN).fill(1e9), nb = new Float64Array(RN), sA = subjOfLab.reduce((a, v, r) => a + (v ? ra[r] : 0), 0);
+    const pr = (a, b) => { if (a === b) return; const d = Math.hypot(...lb(a).map((v, k) => v - lb(b)[k])); for (const [u, w] of [[a, b], [b, a]]) { if (!subjOfLab[u]) continue; if (subjOfLab[w]) dS[u] = Math.min(dS[u], d); else { if (d < dB[u]) { dB[u] = d; bN[u] = w; } nb[u]++; } } };
+    for (let y = 0; y < ih - 1; y++) for (let x = 0; x < iw - 1; x++) { const p = y * iw + x; pr(rm.R[p], rm.R[p + 1]); pr(rm.R[p], rm.R[p + iw]); }
+    for (let r = 0; r < RN; r++) if (subjOfLab[r] && ra[r] < sA * 0.1 && ((nb[r] > Math.sqrt(ra[r]) * 0.8 && dB[r] < 16 && dB[r] < dS[r] * 0.8) || (nb[r] > Math.sqrt(ra[r]) * 2.2 && dB[r] < 20 && dB[r] < dS[r]))) { subjOfLab[r] = 0; for (let p = 0; p < n0; p++) if (rm.R[p] === r) { mask[p] = 0; if (bN[r] >= 0) rm.R[p] = bN[r]; } } }
   // key small features (eyes, nose, windows, door): small but high-contrast regions on the subject are kept as "advanced" pieces
   const advOfLab = new Uint8Array(RN);
   if (advMin) { const rl = new Float64Array(RN * 3), fa = new Float64Array(RN); for (let p = 0; p < n0; p++) { const r = rm.R[p]; rl[r * 3] += A[p * 3]; rl[r * 3 + 1] += A[p * 3 + 1]; rl[r * 3 + 2] += A[p * 3 + 2]; if (featMap) fa[r] += featMap[p]; }
@@ -503,11 +808,11 @@ function glassBuild(img, o) {
   if (geo) { rings.forEach(rs => rs && rs.forEach(r => r.forEach(q => q.hard = true))); chains.forEach(c => c.pts && c.pts.forEach(q => q.hard = true)); }
   // piece colours: the photo's average under each piece, then grouped into the chosen number of glass colours
   const sa = new Float64Array(st.n * 4); { for (let y = 0; y < ih; y++) for (let x = 0; x < iw; x++) { const r = st.R[(y + G.f) * W + x + G.f], q = y * iw + x; if (st.fixed[r]) continue; sa[r * 4] += F[q * 3]; sa[r * 4 + 1] += F[q * 3 + 1]; sa[r * 4 + 2] += F[q * 3 + 2]; sa[r * 4 + 3]++; }
-    for (let r = 0; r < st.n; r++) if (sa[r * 4 + 3]) st.col[r] = [sa[r * 4] / sa[r * 4 + 3], sa[r * 4 + 1] / sa[r * 4 + 3], sa[r * 4 + 2] / sa[r * 4 + 3]]; }
+    if (!fz) for (let r = 0; r < st.n; r++) if (sa[r * 4 + 3]) st.col[r] = [sa[r * 4] / sa[r * 4 + 3], sa[r * 4 + 1] / sa[r * 4 + 3], sa[r * 4 + 2] / sa[r * 4 + 3]]; }
   const kc = Math.max(2, Math.min(10, Math.round(o.colors))), qs = [];
-  for (let r = 0; r < st.n; r++) if (!st.fixed[r]) { const reps = Math.max(1, Math.min(40, Math.round(sa[r * 4 + 3] / minA * 2))); for (let k = 0; k < reps; k++) qs.push(...st.col[r]); }
+  for (let r = 0; r < st.n; r++) if (!st.fixed[r] && (!calm || st.subj[r])) { const reps = Math.max(1, Math.min(40, Math.round(sa[r * 4 + 3] / minA * 2 * (st.subj[r] && sm.frac < 0.45 ? 3 : 1)))); for (let k = 0; k < reps; k++) qs.push(...st.col[r]); }
   const qC = kmeans(new Float32Array(qs), kc, 20, 13), userCols = (o.userColors || []).map(u => [u.name, ...[1, 3, 5].map(i => parseInt(u.hex.slice(i, i + 2), 16))]);
-  const glassOf = r => st.fixed[r] ? { name: o.frameGlass || nearestGlass(dark).name, rgb: st.col[r] } : nearestGlass(qC[nearestC(qC, ...st.col[r])], userCols);
+  const glassOf = r => st.fixed[r] ? { name: o.frameGlass || nearestGlass(dark).name, rgb: st.col[r] } : fz ? nearestGlass(st.col[r], userCols) : calm && !st.subj[r] ? nearestGlass(st.col[r], userCols) : calm && (() => { const c0 = Math.hypot(...gLab(...st.col[r]).slice(1)); return c0 >= 30 && Math.hypot(...gLab(...qC[nearestC(qC, ...st.col[r])]).slice(1)) < c0 * 0.6; })() ? nearestGlass(st.col[r], userCols) : nearestGlass(qC[nearestC(qC, ...st.col[r])], userCols);
   // piece data
   const D = distT(st.R, W, H), s = regionStats(st.R, st.n, W, H), best = new Int32Array(st.n).fill(-1), bestD = new Float32Array(st.n);
   for (let i = 0; i < W * H; i++) { const r = st.R[i]; if (D[i] > bestD[r]) { bestD[r] = D[i]; best[r] = i; } }
@@ -529,6 +834,18 @@ function glassBuild(img, o) {
     const lp = best[i] >= 0 ? [best[i] % W + 0.5, Math.floor(best[i] / W) + 0.5] : [s.cx[i], s.cy[i]];
     pieces.push({ id: i, frame: !!st.fixed[i], subj: !!st.subj[i], rgb: glass.rgb, glass: glass.name, user: !!glass.user, src: st.col[i].map(Math.round), segs: rs.map(ringSegs), poly: rs.map(r => r.map(q => q.p)), label: lp.map(v => r2(v)), font: r2(Math.max(4, Math.min(bestD[i] * 1.1, 0.32 * ppi))), areaIn: r2(areaIn), widthIn: r2(widthIn), flags });
   }
+  // a subject piece never shares its glass with a background piece it touches (the silhouette must read in glass, not only in lead)
+  if (calm) { const byId = new Map(pieces.map(p => [p.id, p])), adj = new Map();
+    for (let y = 0; y < H - 1; y++) for (let x = 0; x < W - 1; x++) { const a = st.R[y * W + x]; for (const b of [st.R[y * W + x + 1], st.R[(y + 1) * W + x]]) { if (a === b) continue; const pa = byId.get(a), pb = byId.get(b); if (!pa || !pb || pa.frame || pb.frame || pa.subj === pb.subj) continue; const sp2 = pa.subj ? pa : pb, bp = pa.subj ? pb : pa; (adj.get(sp2.id) || adj.set(sp2.id, new Set()).get(sp2.id)).add(bp.glass); } }
+    const bgGlass = new Set(pieces.filter(p => !p.subj && !p.frame).map(p => p.glass)), bgRGB = pieces.filter(p => !p.subj && !p.frame).map(p => p.rgb);
+    for (const [id, used] of adj) { const pc = byId.get(id); if (pc.user || !used.has(pc.glass)) continue; const c = st.col[id], lc = gLab(...c), neutral = Math.hypot(lc[1], lc[2]) < 16; const cand = GLASS_PALETTE.filter(g => !bgGlass.has(g[0]) && (() => { const gl = gLab(g[1], g[2], g[3]), gc = Math.hypot(gl[1], gl[2]); return neutral ? gc < 12 : gc < 12 || (gl[1] * lc[1] + gl[2] * lc[2]) / (gc * Math.hypot(lc[1], lc[2])) > 0.7; })()).map(g => ({ g, d: cdist(c, [g[1], g[2], g[3]]), far: Math.min(...bgRGB.map(b => cdist(b, [g[1], g[2], g[3]]))) })); if (!cand.length) continue;
+      const bd = Math.min(...cand.map(o => o.d)), best = cand.filter(o => o.d <= (neutral ? bd * 3 + 80 : bd * 1.15 + 12)).sort((a, b) => b.far - a.far)[0].g; pc.glass = best[0]; pc.rgb = [best[1], best[2], best[3]]; } }
+  // calm subject: in the lower body, lighter neutral parts (a belly) get light glass and darker ones (wing, tail) dark glass, so they never merge
+  if (calm) { const sp2 = pieces.filter(p => p.subj && !p.user), bgG = new Set(pieces.filter(p => !p.subj && !p.frame).map(p => p.glass));
+    if (sp2.length) { const ys = sp2.map(p => p.label[1]), y0 = Math.min(...ys), y1 = Math.max(...ys), neu = sp2.filter(p => { const l = gLab(...p.src); return Math.hypot(l[1], l[2]) < 18 && p.label[1] > y0 + (y1 - y0) * 0.35; });
+      if (neu.length >= 2) { const Ls = neu.map(p => gLab(...p.src)[0]).sort((a, b) => a - b), med = Ls[Math.floor(Ls.length / 2)], pick = names => { for (const n of names) { const g = GLASS_PALETTE.find(q => q[0] === n); if (g && !bgG.has(n)) return g; } return null; };
+        const light = pick(['White opal', 'Wispy white', 'Clear textured', 'Light gray']), dark = pick(['Charcoal', 'Medium gray', 'Black opal']), xs2 = sp2.map(p => p.label[0]), cx = (Math.min(...xs2) + Math.max(...xs2)) / 2, bw2 = Math.max(...xs2) - Math.min(...xs2) || 1, chr = p => { const l = gLab(...p.src); return Math.hypot(l[1], l[2]); }, breast = sp2.reduce((a, p) => chr(p) > chr(a) ? p : a), front = Math.sign(breast.label[0] - cx) || 1;
+        for (const p of neu) { const L = gLab(...p.src)[0], g = L >= med + 2 && (p.label[0] - cx) * front >= -bw2 * 0.1 ? light : L <= med - 2 ? dark : null; if (g) { p.glass = g[0]; p.rgb = [g[1], g[2], g[3]]; } } } } }
   // number top→bottom in 1" bands, left→right
   pieces.sort((a, b) => Math.floor(a.label[1] / ppi) - Math.floor(b.label[1] / ppi) || a.label[0] - b.label[0]); pieces.forEach((p, j) => p.n = j + 1);
   // legend
@@ -549,29 +866,60 @@ function glassBuild(img, o) {
   if (!reasons.length) reasons.push(`${pieces.length} pieces, all at least ${rules.minAreaIn.toFixed(1)} sq in and ${fracIn(rules.minWidthIn)} wide, no deep curves or sharp points.`);
   // recognisability proxy: share of the subject's main contours that ended up on a lead line (within 1 px)
   let cOn = 0, cAll = 0; for (let y = 1; y < ih - 1; y++) for (let x = 1; x < iw - 1; x++) { const q = y * iw + x; if (!Cm[q] || !mask[q]) continue; cAll++; const g = (y + G.f) * W + x + G.f, r = st.R[g]; let on = false; for (let j = -2; j <= 2 && !on; j++) for (let i = -2; i <= 2; i++) if (st.R[g + j * W + i] !== r) { on = true; break; } if (on) cOn++; }
+  if (fz) { const ov = new Uint8Array(n0); for (const l of fz.overlay) for (let i = 1; i < l.length; i++) { const [ax, ay] = l[i - 1], [bx, by] = l[i], n = Math.ceil(Math.hypot(bx - ax, by - ay)) + 1; for (let t = 0; t <= n; t++) { const x = Math.round(ax + (bx - ax) * t / n), y = Math.round(ay + (by - ay) * t / n); if (x >= 0 && y >= 0 && x < iw && y < ih) ov[y * iw + x] = 1; } }
+    cOn = 0; cAll = 0; for (let y = 2; y < ih - 2; y++) for (let x = 2; x < iw - 2; x++) { const q = y * iw + x; if (!fz.main[q]) continue; cAll++; const g = (y + G.f) * W + x + G.f, r = st.R[g]; let on = false; for (let j = -2; j <= 2 && !on; j++) for (let i = -2; i <= 2; i++) if (st.R[g + j * W + i] !== r || ov[q + j * iw + i]) { on = true; break; } if (on) cOn++; } }
   const outlineKept = cAll ? Math.round(cOn / cAll * 100) : 100;
   if (outlineKept < 45 && sm.how !== 'none') notes.push(`Only ${outlineKept}% of the subject’s outlines became lead lines at this size. For more recognisable detail, make the panel larger, lower Simplicity, or raise Detail on subject.`);
   // painted detail: strong interior contours that are not lead lines (subject + must-keep features; whole panel when there is no subject)
-  let detail = [], dots = [];
+  let detail = [], dots = [], shapes = [], overlay = [];
+  if (fz) { for (const l of fz.overlay) overlay.push(l.map(([x, y]) => [r2(x + G.f), r2(y + G.f)])); notes.push(`Building layout: ${fz.ops.length} windows/doors as rectangles${fz.sky ? ', sky' : ''}${fz.cornices.length ? ', ' + fz.cornices.length + ' cornice line' + (fz.cornices.length > 1 ? 's' : '') : ''}; bars and planks are came lines.`); }
   if (o.paint !== false && o.smallFeat !== 'off') {
     const hasSubj = sm.how !== 'none' && sm.how !== 'off' && !geo, thin = contourMap(A, E, iw, ih, hasSubj ? 0.45 : geo ? 0.5 : 0.62, 0.28, Math.round(ppi * 0.3), false), allow = new Uint8Array(n0);
     if (hasSubj) { const dm = blur1(Float32Array.from(mask), iw, ih, 3); for (let p = 0; p < n0; p++) allow[p] = dm[p] > 0.5 ? 1 : 0; } else allow.fill(1);
     if (featMap) for (let p = 0; p < n0; p++) if (featMap[p]) allow[p] = 1;
     // painted dots: tiny dark features (eyes, pupils, nostrils, a beak tip) below piece size
     const Lb = new Float32Array(n0); for (let p = 0; p < n0; p++) Lb[p] = A[p * 3]; const Lm = blur1(Lb, iw, ih, Math.max(2, Math.round(ppi * 0.25))), dk = new Uint8Array(n0);
-    for (let p = 0; p < n0; p++) dk[p] = allow[p] && !geo && Lb[p] < 38 && Lm[p] - Lb[p] > 16 && Math.hypot(A[p * 3 + 1], A[p * 3 + 2]) < 22 ? 1 : 0;
+    const allowD = new Uint8Array(n0); if (hasSubj) { const dm2 = blur1(Float32Array.from(mask), iw, ih, Math.max(3, Math.round(ppi * 0.3))); for (let p = 0; p < n0; p++) allowD[p] = allow[p] || dm2[p] > 0.12 ? 1 : 0; } else allowD.set(allow);
+    for (let p = 0; p < n0; p++) dk[p] = allowD[p] && !geo && Lb[p] < 38 && Lm[p] - Lb[p] > 16 && Math.hypot(A[p * 3 + 1], A[p * 3 + 2]) < 22 ? 1 : 0;
     const dc = components(dk, iw, ih), da = new Float64Array(dc.n), dx = new Float64Array(dc.n), dy = new Float64Array(dc.n), dxx = new Float64Array(dc.n), dyy = new Float64Array(dc.n), dcol = new Float64Array(dc.n * 3), dcon = new Float64Array(dc.n);
     for (let p = 0; p < n0; p++) { const r = dc.R[p]; if (dc.from[r] !== 1) continue; const x = p % iw, y = (p / iw) | 0; da[r]++; dx[r] += x; dy[r] += y; dxx[r] += x * x; dyy[r] += y * y; dcol[r * 3] += F[p * 3]; dcol[r * 3 + 1] += F[p * 3 + 1]; dcol[r * 3 + 2] += F[p * 3 + 2]; dcon[r] += Lm[p] - Lb[p]; }
     const amin = 0.004 * ppi * ppi, amax = 0.12 * ppi * ppi, cands = [];
     for (let r = 0; r < dc.n; r++) { if (dc.from[r] !== 1 || da[r] < amin || da[r] > amax) continue; const cx = dx[r] / da[r], cy = dy[r] / da[r], sx = Math.sqrt(Math.max(0.25, dxx[r] / da[r] - cx * cx)), sy = Math.sqrt(Math.max(0.25, dyy[r] / da[r] - cy * cy)); if (Math.max(sx, sy) / Math.min(sx, sy) > 3.5) continue;
       cands.push({ c: dcon[r] / da[r] * Math.sqrt(da[r]), d: { cx: r2(cx + G.f), cy: r2(cy + G.f), rx: r2(Math.max(1.2, sx * 1.8)), ry: r2(Math.max(1.2, sy * 1.8)), hex: gHex([0, 1, 2].map(k => Math.min(60, dcol[r * 3 + k] / da[r]))) } }); }
     dots = cands.sort((a, b) => b.c - a.c).slice(0, 12).map(x => x.d);
+    // painted shapes: elongated darker features that poke out of the subject outline (beak, claws, antennae) — filled with glass paint
+    if (hasSubj && calm) { const dm3 = blur1(Float32Array.from(mask), iw, ih, 2), Lr = new Float32Array(n0), Cr = new Float32Array(n0); for (let p = 0; p < n0; p++) { const c = gLab(F[p * 3], F[p * 3 + 1], F[p * 3 + 2]); Lr[p] = c[0]; Cr[p] = Math.hypot(c[1], c[2]); }
+      const Lr1 = blur1(Lr, iw, ih, 1), Lm2 = blur1(Lr, iw, ih, Math.max(3, Math.round(ppi * 0.4))), sk = new Uint8Array(n0);
+      const near = chamferT(mask, iw, ih); for (let p = 0; p < n0; p++) sk[p] = near[p] < ppi * 1.1 && dm3[p] < 0.99 && Lr[p] < 50 && Lm2[p] - Lr[p] > 9 && Cr[p] < 28 ? 1 : 0;
+      const kc2 = components(sk, iw, ih), info = new Map();
+      for (let p = 0; p < n0; p++) { const r = kc2.R[p]; if (kc2.from[r] !== 1) continue; let o2 = info.get(r); if (!o2) info.set(r, o2 = { px: [], out: 0, edge: 0, con: 0, col: [0, 0, 0] }); const x = p % iw, y = (p / iw) | 0; o2.px.push([x + G.f + 0.5, y + G.f + 0.5]); if (!mask[p]) o2.out++; if (dm3[p] > 0.05) o2.edge++; o2.con += Lm2[p] - Lb[p]; o2.col[0] += F[p * 3]; o2.col[1] += F[p * 3 + 1]; o2.col[2] += F[p * 3 + 2]; }
+      const sc = []; for (const [, o2] of info) { const n = o2.px.length; if (n < ppi * ppi * 0.01 || n > ppi * ppi * 0.13 || o2.out < n * 0.12 || o2.edge < n * 0.2) continue; const mx = o2.px.reduce((a, q) => a + q[0], 0) / n, my = o2.px.reduce((a, q) => a + q[1], 0) / n; let sxx = 0, syy = 0, sxy = 0; for (const [x, y] of o2.px) { sxx += (x - mx) ** 2; syy += (y - my) ** 2; sxy += (x - mx) * (y - my); } const tr = (sxx + syy) / n, dt = (sxx * syy - sxy * sxy) / n / n, l1 = tr / 2 + Math.sqrt(Math.max(0, tr * tr / 4 - dt)), l2 = Math.max(0.01, tr - l1); if (l1 / l2 < 3) continue; sc.push({ o2, c: o2.con / n * Math.sqrt(n), mx, my }); }
+      const grow = ppi * 0.03; shapes = sc.sort((a, b) => b.c - a.c).slice(0, 3).map(({ o2, mx, my }) => ({ pts: hull(o2.px).map(([x, y]) => { const dx = x - mx, dy = y - my, d = Math.hypot(dx, dy) || 1; return [r2(x + dx / d * grow), r2(y + dy / d * grow)]; }), hex: gHex(o2.col.map(v => Math.min(70, v / o2.px.length * 0.8))) })).filter(o2 => o2.pts.length >= 3); }
     const Dl = distT(st.R, W, H); detail = detailLines(thin, allow, Dl, st, G, iw, ih, ppi, (iw + ih) * (0.6 + det * 0.18) * (hasSubj ? Math.max(0.35, sm.frac) * 1.6 : geo ? 1.2 : 0.7), geo);
+    if (calm && hasSubj) { // calm subjects: a few long, smooth painted lines instead of many scratchy ones, plus feather bands on the wing
+      const lenOf = l => l.reduce((a, q, i) => i ? a + Math.hypot(q[0] - l[i - 1][0], q[1] - l[i - 1][1]) : 0, 0), sa = Math.sqrt(sm.frac * n0);
+      detail = detail.map(l => { if (l.length < 3) return l; const k = new Uint8Array(l.length); k[0] = k[l.length - 1] = 1; dp(l, ppi * 0.05, k, 0, l.length - 1); return l.filter((_, i) => k[i]); }).filter(l => lenOf(l) > sa * 0.16).sort((a, b) => lenOf(b) - lenOf(a)).slice(0, 8);
+      const acc = new Map(); let mA = 0; for (let y = 0; y < ih; y++) for (let x = 0; x < iw; x++) { const p = y * iw + x; if (mask[p]) mA++; const r = st.R[(y + G.f) * W + x + G.f]; if (r < 0 || !st.subj[r]) continue; let a = acc.get(r); if (!a) acc.set(r, a = { n: 0, x: 0, y: 0, xx: 0, yy: 0, xy: 0, L: 0 }); a.n++; a.x += x; a.y += y; a.xx += x * x; a.yy += y * y; a.xy += x * y; a.L += A[p * 3]; }
+      let wing = null; for (const [r, a] of acc) { if (a.n < mA * 0.05) continue; const mx = a.x / a.n, my = a.y / a.n, sxx = a.xx / a.n - mx * mx, syy = a.yy / a.n - my * my, sxy = a.xy / a.n - mx * my, tr = sxx + syy, dt = sxx * syy - sxy * sxy, l1 = tr / 2 + Math.sqrt(Math.max(0, tr * tr / 4 - dt)), l2 = Math.max(0.5, tr - l1); if (l1 / l2 < 1.8) continue; const L = a.L / a.n; if (!wing || L < wing.L) wing = { r, L, mx, my, l1, l2, ang: 0.5 * Math.atan2(2 * sxy, sxx - syy) }; }
+      if (wing) { const vx = Math.cos(wing.ang), vy = Math.sin(wing.ang), ux = -vy, uy = vx, hw = 2 * Math.sqrt(wing.l2), hl = Math.sqrt(3 * wing.l1), ins = ppi * 0.07;
+        const lab = (x, y) => { const xi = Math.round(x), yi = Math.round(y); return xi < 0 || yi < 0 || xi >= iw || yi >= ih ? -2 : st.R[(yi + G.f) * W + xi + G.f]; };
+        for (const off of [-hw / 3, hw / 3]) { let run = [], best = []; for (let t = -hl; t <= hl; t += 1) { const x = wing.mx + vx * t + ux * off, y = wing.my + vy * t + uy * off, ok = [[0, 0], [ux * ins, uy * ins], [-ux * ins, -uy * ins], [vx * ins, vy * ins], [-vx * ins, -vy * ins]].every(([a, b]) => lab(x + a, y + b) === wing.r); if (ok) run.push([x, y]); else { if (run.length > best.length) best = run; run = []; } } if (run.length > best.length) best = run;
+          if (best.length > hl * 0.7) detail.push([best[0], best[Math.floor(best.length / 2)], best[best.length - 1]].map(([x, y]) => [r2(x + G.f), r2(y + G.f)])); } } }
+    if (fz) detail = detail.filter(l => l.length >= 2 && Math.hypot(l[l.length - 1][0] - l[0][0], l[l.length - 1][1] - l[0][1]) > iw * 0.12).slice(0, 4); // graffiti and stains are dropped
+    // legs and perch: a band just under a found subject keeps its few longest contours (legs, the branch or wire it stands on)
+    if (calm) { let bx0 = iw, by0 = ih, bx1 = 0, by1 = 0; for (let p = 0; p < n0; p++) if (mask[p]) { const x = p % iw, y = (p / iw) | 0; if (x < bx0) bx0 = x; if (x > bx1) bx1 = x; if (y < by0) by0 = y; if (y > by1) by1 = y; }
+      const bw = bx1 - bx0, bh = by1 - by0, band = new Uint8Array(n0), thinB = contourMap(A, E, iw, ih, 0.5, 0.25, Math.round(ppi * 0.4), false);
+      for (let y = Math.max(0, Math.round(by1 - bh * 0.25)); y < Math.min(ih, Math.round(by1 + bh * 0.3)); y++) for (let x = Math.max(0, Math.round(bx0 - bw * 0.35)); x < Math.min(iw, Math.round(bx1 + bw * 0.35)); x++) band[y * iw + x] = allow[y * iw + x] ? 0 : 1;
+      { const pl = houghPerch(thinB, band, iw, ih, ppi, bw, by1 - bh * 0.1, bh * 0.15); if (pl) overlay.push(pl.map(([x, y]) => [r2(x + G.f), r2(y + G.f)])); }
+      const bl = overlay.length ? [] : detailLines(thinB, band, Dl, st, G, iw, ih, ppi, (bw + bh) * 3, false), lenOf = l => l.reduce((a, q, i) => i ? a + Math.hypot(q[0] - l[i - 1][0], q[1] - l[i - 1][1]) : 0, 0);
+      const pc = bl.map(l => { const k = new Uint8Array(l.length); k[0] = k[l.length - 1] = 1; dp(l, ppi * 0.12, k, 0, l.length - 1); const q = l.filter((_, i) => k[i]); return { q, len: lenOf(q), span: Math.hypot(q[q.length - 1][0] - q[0][0], q[q.length - 1][1] - q[0][1]) }; }).filter(o2 => o2.span > bw * 0.55 && o2.span > o2.len * 0.8).sort((a, b) => b.span - a.span);
+      if (pc.length) overlay.push(pc[0].q); }
   }
   const silhouette = sm.how === 'none' || sm.how === 'off' ? [] : chains.filter(c => c.s[0] >= 0 && c.s[1] >= 0 && !st.fixed[c.s[0]] && !st.fixed[c.s[1]] && !!st.subj[c.s[0]] !== !!st.subj[c.s[1]]).map(c => chainSegs(c.pts)).filter(s => s.length > 1);
   const line = GLASS_LINES[o.line] || GLASS_LINES.foil116;
-  return { kind: 'glass', version: 2, f: G.f, crop: img.crop || [0, 0, 1, 1], subject: { how: sm.how, frac: r2(sm.frac), outlineKept }, silhouette, detail, dots, style: geo ? 'geometric' : 'organic', axisFrac: r2(axf), widthIn: G.widthIn, heightIn: r2(G.gridH / G.ppi), ppi: G.ppi, gridW: W, gridH: H, frameIn: o.frame ? o.frameIn : 0, lineIn: line.in, lineLabel: line.label, pieces, legend, notes,
-    stats: { outlineKept, advanced: adv.length, detailLines: detail.length, dots: dots.length, pieces: pieces.length, colors: legend.length, difficulty, reasons, smallestIn: r2(smallest), minAreaIn: r2(rules.minAreaIn), minWidthIn: r2(rules.minWidthIn), flagged: { advanced: adv, small, narrow, deep, sharp, hole } }, settings: o };
+  const dbg = o._debug ? { mask: sm.mask, iw, ih } : undefined;
+  return { _dbg: dbg, _facade: fz && o._debug ? { main: Array.from(fz.main), lead: (() => { const a = new Uint8Array(iw * ih); for (let y = 1; y < ih - 1; y++) for (let x = 1; x < iw - 1; x++) { const g = (y + G.f) * W + x + G.f; if (st.R[g] !== st.R[g + 1] || st.R[g] !== st.R[g + W]) a[y * iw + x] = 1; } return Array.from(a); })(), probe: fz.probe, ops: fz.ops, steps: fz.steps, cornices: fz.cornices, ground: fz.groundY, cand: fz.cand, X: fz.X, Y: fz.Y } : undefined, kind: 'glass', version: 2, f: G.f, crop: img.crop || [0, 0, 1, 1], subject: { how: sm.how, frac: r2(sm.frac), outlineKept }, silhouette, detail, dots, shapes, overlay, style: geo ? 'geometric' : 'organic', axisFrac: r2(axf), widthIn: G.widthIn, heightIn: r2(G.gridH / G.ppi), ppi: G.ppi, gridW: W, gridH: H, frameIn: o.frame ? o.frameIn : 0, lineIn: line.in, lineLabel: line.label, pieces, legend, notes,
+    stats: { outlineKept, advanced: adv.length, detailLines: detail.length, dots: dots.length + shapes.length, pieces: pieces.length, colors: legend.length, difficulty, reasons, smallestIn: r2(smallest), minAreaIn: r2(rules.minAreaIn), minWidthIn: r2(rules.minWidthIn), flagged: { advanced: adv, small, narrow, deep, sharp, hole } }, settings: o };
 }
 const listN = a => a.length > 6 ? a.slice(0, 6).map(n => '#' + n).join(', ') + ` +${a.length - 6} more` : a.map(n => '#' + n).join(', ');
 const fracIn = v => { const s = Math.round(v * 16); return s % 16 === 0 ? s / 16 + '″' : (s % 2 ? s + '/16″' : s % 4 ? s / 2 + '/8″' : s % 8 ? s / 4 + '/4″' : '1/2″'); };
@@ -607,7 +955,7 @@ function glassSVG(P, { cut = false, numbers = true, scaleBar = true, fill = 'gla
   const lw = P.lineIn * P.ppi, lum = c => 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2], colOf = p => cut ? [255, 255, 255] : fill === 'photo' && p.src ? p.src : p.rgb;
   const body = P.pieces.map(p => `<path data-piece="${p.n}" d="${p.segs.map(segsToD).join('')}" fill="${gHex(colOf(p))}" fill-rule="evenodd"/>`).join('');
   const lines = P.pieces.map(p => `<path d="${p.segs.map(segsToD).join('')}"/>`).join('');
-  const sil = (P.silhouette || []).map(s => segsToD(s)).join(''), det = (P.detail || []).map(l => 'M' + l.map(q => q.join(' ')).join('L')).join(''), dots = (P.dots || []).map(d => `<ellipse cx="${d.cx}" cy="${d.cy}" rx="${d.rx}" ry="${d.ry}" fill="${cut ? 'none' : d.hex}" stroke="${cut ? '#b0b0b0' : 'none'}"/>`).join('');
+  const sil = (P.silhouette || []).map(s => segsToD(s)).join(''), det = (P.detail || []).map(l => 'M' + l.map(q => q.join(' ')).join('L')).join(''), dots = (P.dots || []).map(d => `<ellipse cx="${d.cx}" cy="${d.cy}" rx="${d.rx}" ry="${d.ry}" fill="${cut ? 'none' : d.hex}" stroke="${cut ? '#b0b0b0' : 'none'}"/>`).join('') + (P.shapes || []).map(d => `<path d="M${d.pts.map(q => q.join(' ')).join('L')}Z" fill="${cut ? 'none' : d.hex}" stroke="${cut ? '#b0b0b0' : 'none'}"/>`).join('');
   const nums = numbers ? P.pieces.map(p => `<text x="${p.label[0]}" y="${p.label[1]}" font-size="${p.font}" fill="${cut || (opacity > 0.5 && lum(colOf(p)) > 140) ? '#000' : '#fff'}"${opacity <= 0.5 && !cut ? ' stroke="#000" stroke-width="0.6" paint-order="stroke"' : ''}>${p.n}</text>`).join('') : '';
   const bar = scaleBar ? `<g class="scale"><rect x="${P.gridW - P.ppi - 4}" y="${P.gridH - 10}" width="${P.ppi}" height="3" fill="#e33"/></g>` : '';
   let under = '';
@@ -617,7 +965,7 @@ function glassSVG(P, { cut = false, numbers = true, scaleBar = true, fill = 'gla
 <title>Stained glass pattern ${P.widthIn}×${P.heightIn} in, ${P.stats.pieces} pieces</title>
 <rect width="${P.gridW}" height="${P.gridH}" fill="#fff"/>${under}
 <g id="pieces"${opacity < 1 ? ` fill-opacity="${opacity}"` : ''}>${body}</g>
-${showLines ? '' : '<!--'}<g id="lead" fill="none" stroke="${cut ? '#9a9a9a' : '#1a1a1a'}" stroke-width="${+lw.toFixed(3)}" stroke-linejoin="round" stroke-linecap="round">${lines}${sil ? `<path id="silhouette" d="${sil}" stroke-width="${+(lw * 1.6).toFixed(3)}"/>` : ''}</g>${showLines ? '' : '-->'}
+${showLines ? '' : '<!--'}<g id="lead" fill="none" stroke="${cut ? '#9a9a9a' : '#1a1a1a'}" stroke-width="${+lw.toFixed(3)}" stroke-linejoin="round" stroke-linecap="round">${lines}${sil ? `<path id="silhouette" d="${sil}" stroke-width="${+(lw * 1.6).toFixed(3)}"/>` : ''}${(P.overlay || []).length ? `<path id="overlay-lead" d="${P.overlay.map(l => 'M' + l.map(q => q.join(' ')).join('L')).join('')}"${cut ? ' stroke-dasharray="4 2"' : ''}/>` : ''}</g>${showLines ? '' : '-->'}
 ${showLines && (det || dots) ? `<g id="detail" fill="none" stroke="${cut ? '#b0b0b0' : '#1a1a1a'}" stroke-width="${+(lw * 0.5).toFixed(3)}" stroke-linecap="round" stroke-linejoin="round"${cut ? ' stroke-dasharray="2 2"' : ''}><path d="${det}"/>${dots}</g>` : ''}
 ${cut ? `<g id="cut" fill="none" stroke="#000" stroke-width="${+(0.012 * P.ppi).toFixed(3)}">${lines}</g>` : ''}
 <g id="numbers" font-family="Helvetica, Arial, sans-serif" font-weight="700" text-anchor="middle" dominant-baseline="central">${nums}</g>
@@ -679,9 +1027,11 @@ function drawPieces(p, P, cut, lw) {
   p.stroke(cut ? 150 : 26, cut ? 150 : 26, cut ? 150 : 26).lw(lw).op('1 j');
   for (const pc of P.pieces) { p.path(pc.segs.flat()); p.op('S'); }
   if (P.silhouette && P.silhouette.length) { p.lw(lw * 1.6).op('1 J'); for (const s of P.silhouette) { p.path(s); p.op('S'); } p.op('0 J'); }
+  if (P.overlay && P.overlay.length) { p.lw(lw).op('1 J'); if (cut) p.op('[4 2] 0 d'); for (const l of P.overlay) { p.path([['M', ...l[0]], ...l.slice(1).map(q => ['L', ...q])]); p.op('S'); } p.op('[] 0 d 0 J'); }
   if (P.detail && P.detail.length) { p.stroke(cut ? 170 : 26, cut ? 170 : 26, cut ? 170 : 26).lw(lw * 0.5).op('1 J'); if (cut) p.op('[2 2] 0 d'); for (const l of P.detail) { p.path([['M', ...l[0]], ...l.slice(1).map(q => ['L', ...q])]); p.op('S'); } p.op('[] 0 d 0 J'); }
   for (const d of P.dots || []) { const k = 0.5523, { cx, cy, rx, ry } = d; if (!cut) p.fill(...[1, 3, 5].map(i => parseInt(d.hex.slice(i, i + 2), 16))); else p.stroke(170, 170, 170).lw(lw * 0.4);
     p.op(`${f2(cx + rx)} ${f2(cy)} m ${f2(cx + rx)} ${f2(cy + k * ry)} ${f2(cx + k * rx)} ${f2(cy + ry)} ${f2(cx)} ${f2(cy + ry)} c ${f2(cx - k * rx)} ${f2(cy + ry)} ${f2(cx - rx)} ${f2(cy + k * ry)} ${f2(cx - rx)} ${f2(cy)} c ${f2(cx - rx)} ${f2(cy - k * ry)} ${f2(cx - k * rx)} ${f2(cy - ry)} ${f2(cx)} ${f2(cy - ry)} c ${f2(cx + k * rx)} ${f2(cy - ry)} ${f2(cx + rx)} ${f2(cy - k * ry)} ${f2(cx + rx)} ${f2(cy)} c ${cut ? 'S' : 'f'}`); }
+  for (const d of P.shapes || []) { if (!cut) p.fill(...[1, 3, 5].map(i => parseInt(d.hex.slice(i, i + 2), 16))); else p.stroke(170, 170, 170).lw(lw * 0.4); p.op(d.pts.map((q, i) => `${f2(q[0])} ${f2(q[1])} ${i ? 'l' : 'm'}`).join(' ') + ` h ${cut ? 'S' : 'f'}`); }
   if (cut) { p.stroke(0, 0, 0).lw(0.012 * P.ppi); for (const pc of P.pieces) { p.path(pc.segs.flat()); p.op('S'); } }
 }
 function glassGuideLocal(P) {

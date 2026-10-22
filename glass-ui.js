@@ -191,6 +191,10 @@ async function glassOpen(out, { image, saved } = {}) {
     $('#gTapSkip', prev).onclick = () => { picking = false; rebuild(); };
     const gb = $('#gTapGrok', prev); if (gb) gb.onclick = () => { picking = false; findSubject(); };
   };
-  if (P) draw(); else if (o.subjectBox) rebuild(); else tapFirst();
+  // no subject yet: try to find it without a tap (busy scenes), fall back to Grok when there is a key, else ask for a tap
+  const autoFirst = async () => { prev.innerHTML = '<p style="padding:14px"><span class="spinner"></span>Looking for the subject…</p>'; let a = null; try { a = o.focus === false ? null : await glassAutoSubject(img); } catch (_) {}
+    if (a && a.box) { o.subjectBox = a.box; o.subjectName = 'auto-detected subject'; o.focus = true; toast('Subject found automatically — tap “Pick subject” to change it'); rebuild(); }
+    else if (a && a.busy && aiHasKey()) findSubject(); else tapFirst(); };
+  if (P) draw(); else if (o.subjectBox) rebuild(); else autoFirst();
   window.__glass = () => P; window.__glassO = () => o;
 }
