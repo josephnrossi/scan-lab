@@ -1,12 +1,33 @@
 /* Scan Lab — Stained Glass mode UI */
 const GLASS_PREFILL = 'glassPrefill';
-const GLASS_VIEWS = [['pattern', 'Pattern'], ['side', 'Side by side'], ['original', 'Original'], ['overlay', 'Overlay'], ['cut', 'Cut lines']], GLASS_MAIN_VIEWS = ['pattern', 'side', 'original'];
+const GLASS_VIEWS = [['trace', 'Trace'], ['pattern', 'Pattern'], ['cut', 'Cut lines'], ['paint', 'Paint guide'], ['overlay', 'Overlay'], ['side', 'Side by side'], ['original', 'Original']], GLASS_MAIN_VIEWS = ['trace', 'pattern', 'cut', 'paint', 'overlay', 'side', 'original'],
+  GLASS_PAINT_AMT = [['light', 'Light'], ['medium', 'Medium'], ['bold', 'Bold']],
+  GLASS_TOOLS = [['hand', 'Hand cutting', 'Glass cutter + running/grozing pliers only'], ['grinder', 'With grinder', 'Cutter plus a glass grinder for tight curves and small pieces'], ['ringsaw', 'Ring saw', 'Ring or band saw: deep inside curves and the smallest pieces']];
+/* faithful trace layer: the literal vector duplicate of the photo (no cutting rules), drawn in the pattern's frame */
+function glassTraceSVG(P) { const T = P.trace; if (!T) return ''; return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${P.gridW} ${P.gridH}"><rect width="${P.gridW}" height="${P.gridH}" fill="#222"/><rect x="${P.f}" y="${P.f}" width="${P.gridW - 2 * P.f}" height="${P.gridH - 2 * P.f}" fill="${T.bg || '#888'}"/><g transform="translate(${P.f} ${P.f}) scale(${((P.gridW - 2 * P.f) / T.w).toFixed(5)} ${((P.gridH - 2 * P.f) / T.h).toFixed(5)})">${T.paths.map(([d, c]) => `<path d="${d}" fill="${c}" stroke="${c}" stroke-width="0.6" stroke-linejoin="round"/>`).join('')}</g></svg>`; }
 function svgFit(s) { return s.replace(/width="[^"]+in" height="[^"]+in"/, 'width="100%" preserveAspectRatio="xMidYMid meet"'); }
 /* render pattern SVG → JPEG data URL (for the recognisability check) */
 async function glassRenderJPEG(P, max = 900) {
   const svg = glassSVG(P, { numbers: false, scaleBar: false }).replace(/width="[^"]+in" height="[^"]+in"/, `width="${P.gridW}" height="${P.gridH}"`);
   const im = await loadImg('data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg)), s = Math.min(1, max / Math.max(P.gridW, P.gridH)) * 2;
   const c = document.createElement('canvas'); c.width = Math.round(P.gridW * s); c.height = Math.round(P.gridH * s); const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(im, 0, 0, c.width, c.height); return c.toDataURL('image/jpeg', 0.85);
+}
+/* photo tracer (tracer.js) in a Web Worker; falls back to running inline where workers are unavailable */
+let _gw = null, _gwId = 0; const _gwWait = new Map();
+function glassTraceRun(id, o) {
+  const G = glassGeometry(o, id.aspect), img = { width: id.width, height: id.height, data: id.data, crop: id.crop, f: G.f }, env = glassTraceEnv(o), oo = JSON.parse(JSON.stringify(o));
+  if (!o.frame) img.f = 0;
+  const inline = () => { if (!self.PhotoTracer) throw new Error('tracer not loaded'); return self.PhotoTracer.trace(img, oo, env); };
+  if (typeof Worker === 'undefined' || window.__noWorker) return Promise.resolve().then(inline);
+  try { if (!_gw) { _gw = new Worker('tracer-worker.js'); _gw.onmessage = e => { const w = _gwWait.get(e.data.id); if (!w) return; _gwWait.delete(e.data.id); e.data.error ? w[1](new Error(e.data.error)) : w[0](e.data.P); }; _gw.onerror = e => { e.preventDefault && e.preventDefault(); for (const [, w] of _gwWait) w[2](); _gwWait.clear(); _gw = null; window.__noWorker = true; }; } }
+  catch (_) { window.__noWorker = true; return Promise.resolve().then(inline); }
+  return new Promise((res, rej) => { const k = ++_gwId; _gwWait.set(k, [res, rej, () => { try { res(inline()); } catch (e) { rej(e); } }]); _gw.postMessage({ id: k, img, o: oo, env }); });
+}
+/* pattern → PNG at 150 dpi of the finished size (colour pattern with lead lines) */
+async function glassRenderPNG(P, { fill = 'glass', cut = false, dpi = 150 } = {}) {
+  const svg = glassSVG(P, { fill, cut, numbers: cut }).replace(/width="[^"]+in" height="[^"]+in"/, `width="${P.gridW}" height="${P.gridH}"`), im = await loadImg('data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg));
+  const s = Math.min(dpi / P.ppi, 4000 / Math.max(P.gridW, P.gridH)), c = document.createElement('canvas'); c.width = Math.round(P.gridW * s); c.height = Math.round(P.gridH * s); const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(im, 0, 0, c.width, c.height);
+  return new Promise(r => c.toBlob(r, 'image/png'));
 }
 const boxN = b => Array.isArray(b) && b.length === 4 ? b.map(v => { v = num(v); return v == null ? null : v > 1.5 ? v / 1000 : v; }) : null;
 const boxOK = b => b && b.every(v => v != null && v >= 0 && v <= 1) && b[2] - b[0] > 0.02 && b[3] - b[1] > 0.02;
@@ -25,20 +46,26 @@ async function glassOpen(out, { image, saved } = {}) {
     <div class="res-head"><h2>Stained-glass pattern</h2><span class="badge" id="gDiffBadge"></span></div>
     <p class="tip small" id="gTip" hidden>Tip: drag <b>Detail</b> for fewer or more pieces, and use <b>Side by side</b> to compare with your photo. <button class="link" id="gTipX">Got it</button></p>
     <div class="glass-preview" id="gPrev"></div>
-    <div class="seg seg-grid3" role="group" aria-label="View" style="margin-top:8px">${GLASS_VIEWS.filter(v => GLASS_MAIN_VIEWS.includes(v[0])).map(([k, l]) => `<button data-pv="${k}" aria-pressed="${k === 'pattern'}">${l}</button>`).join('')}</div>
+    <div class="seg seg-grid4" role="group" aria-label="View" style="margin-top:8px">${GLASS_VIEWS.filter(v => GLASS_MAIN_VIEWS.includes(v[0])).map(([k, l]) => `<button data-pv="${k}" aria-pressed="${k === (o.method === 'stylized' ? 'pattern' : 'trace')}">${l}</button>`).join('')}</div>
+    <label class="field" id="gOpWrap" hidden><span>Pattern over photo <b id="gOpV"></b></span><input type="range" id="gOp" min="0" max="100" step="5" value="45"><span class="range-ends muted small"><span>photo</span><span>pattern</span></span></label>
     <label class="field gdet"><span><span id="gDetL">Detail</span> <b id="gDetV"></b></span><input type="range" id="gDet" min="1" max="10" step="1" title="1 = simple, 10 = detailed: more colour zones and smaller pieces"><span class="range-ends muted small"><span>simpler · fewer pieces</span><span>more detail</span></span></label>
-    <p class="small muted" id="gSum"></p>
+    <div class="gquick"><label class="field" data-tr><span>Glass colors <b id="gTColV"></b></span><input type="range" id="gTCol" min="6" max="24" step="1" title="How many glass colours, taken from your photo"></label>
+      <div class="field"><span>Lead lines</span><div class="seg seg-grid4 lead-seg" role="group" aria-label="Lead line width">${Object.entries(GLASS_LINES).map(([k, v]) => `<button data-lead="${k}" aria-pressed="false" title="${v.label}">${v.label.replace(/^.*— /, '').replace(' lines', '')}<small>${/came/i.test(v.label) ? 'came' : 'foil'}</small></button>`).join('')}</div></div>
+      <div class="field" data-tr><span>Tools you have</span><div class="seg seg-grid3 tool-seg" role="group" aria-label="Tools">${GLASS_TOOLS.map(([k, l, t]) => `<button data-tool="${k}" aria-pressed="false" title="${t}">${l}</button>`).join('')}</div></div>
+      <div class="field" data-tr><label class="toggle paint-tog"><input type="checkbox" id="gPaintOn"> <span>Paint lines <small class="muted">— fine detail painted on the glass</small></span></label><div class="seg seg-grid3 paint-seg" role="group" aria-label="Paint line amount">${GLASS_PAINT_AMT.map(([k, l]) => `<button data-pamt="${k}" aria-pressed="false">${l}</button>`).join('')}</div>
+        <p class="small muted" id="gPaintNote" style="margin:4px 0 0">Eyes, fur, feathers, window bars and veins that are too small to cut become <b>paint lines</b>. After cutting and grinding, trace them onto each piece with glass paint — kiln-fired vitreous paint, or no-kiln stained-glass paint markers — then foil. Print the <b>Paint guide</b> to trace from. <a href="https://www.glasspaintersmethod.com/how-to-paint-stained-glass/" target="_blank" rel="noopener">How trace lines are painted</a></p></div>
+      <label class="field gwq"><span>Panel width <small class="muted">— wider keeps more detail</small></span><span class="row gap"><input type="number" id="gWq" inputmode="decimal" min="2" step="1"><b id="gWqU"></b></span></label></div>
+    <p class="small" id="gSum"></p>
     <details class="adv" id="gAdv"><summary>Advanced <span class="muted small">— method, size, views, colors, lines, frame</span></summary>
     <p class="muted small" id="gIntro"></p>
     <div class="seg" role="group" aria-label="More views" style="margin-top:4px">${GLASS_VIEWS.filter(v => !GLASS_MAIN_VIEWS.includes(v[0])).map(([k, l]) => `<button data-pv="${k}" aria-pressed="false">${l}</button>`).join('')}</div>
-    <label class="field" id="gOpWrap" hidden>Pattern opacity <b id="gOpV"></b><input type="range" id="gOp" min="0" max="100" step="5" value="45"></label>
     <div class="row gap wrap" style="margin-top:6px"><span class="small muted">Piece colors</span><div class="seg" role="group" aria-label="Piece colours"><button data-fill="photo" aria-pressed="true">Photo colors</button><button data-fill="glass" aria-pressed="false">Glass colors</button></div></div>
     <div id="gSubj" class="small"></div>
     <div class="ctl" style="margin-top:10px">
       <label>Method <select id="gMethod"><option value="trace">Trace photo (faithful)</option><option value="stylized">Stylized (simplified shapes)</option></select></label>
-      <label><span id="gSimL">Simplify</span> <b id="gSimV"></b><input type="range" id="gSim" min="1" max="10" step="1" title="Higher = coarser regions: fewer, larger pieces (sets the minimum piece size)"></label>
+      <label data-sty><span id="gSimL">Simplify</span> <b id="gSimV"></b><input type="range" id="gSim" min="1" max="10" step="1" title="Higher = coarser regions: fewer, larger pieces (sets the minimum piece size)"></label>
       <label data-sty>Glass colors <b id="gColV"></b><input type="range" id="gCol" min="2" max="10" step="1"></label>
-      <label>Lines <select id="gLine">${Object.entries(GLASS_LINES).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('')}</select></label>
+      <label hidden>Lines <select id="gLine">${Object.entries(GLASS_LINES).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('')}</select></label>
       <label>Finished width <input type="number" id="gW" inputmode="decimal" min="2" step="0.5"></label>
       <label>Height <input type="number" id="gH" inputmode="decimal" min="2" step="0.5" placeholder="auto"></label>
       <label>Units <span class="seg"><button data-u="in">in</button><button data-u="cm">cm</button></span></label>
@@ -54,15 +81,15 @@ async function glassOpen(out, { image, saved } = {}) {
     </details>
   </div>
   <div class="card"><h3 style="margin-top:0">Glass to buy</h3><div id="gUC"></div><div class="legend" id="gLegend"></div></div>
-  ${actBar({ save: 'gSave', saved: !!saved, exports: [['gPDF', '⤓ Pattern PDF'], ['gCut', '⤓ Cut-line PDF'], ['gSVG', '⤓ SVG (for cutting software)']], extra: '<p class="muted small" style="margin:0">PDFs print at real size — choose 100% / Actual size. Your original photo is saved with the pattern.</p>' })}
+  ${actBar({ save: 'gSave', saved: !!saved, exports: [['gPDF', '⤓ Pattern PDF (real size)'], ['gCut', '⤓ Cut-line PDF (numbered)'], ['gPaintPDF', '⤓ Paint guide PDF'], ['gSVG', '⤓ SVG (for cutting software)'], ['gPNG', '⤓ PNG image']], extra: '<p class="muted small" style="margin:0">PDFs print at real size — choose 100% / Actual size. Your original photo is saved with the pattern.</p>' })}
   <details class="card adv-card"><summary>Pattern details &amp; rules</summary><div id="gStats"></div></details>
   <div class="card" id="gRecogCard"></div>
   <details class="card adv-card"><summary>Beginner build guide — tools and steps</summary><div id="gTips"></div></details>`;
-  const prev = $('#gPrev', out); let view = 'pattern', fillMode = 'photo', op = 0.45, t, picking = false;
+  const prev = $('#gPrev', out); let view = o.method === 'stylized' ? 'pattern' : 'trace', fillMode = o.method === 'stylized' ? 'photo' : 'glass', op = 0.45, t, picking = false;
   const fill = () => { const tr = o.method !== 'stylized';
-    $('#gMethod', out).value = tr ? 'trace' : 'stylized'; $$('[data-sty]', out).forEach(e => e.hidden = tr); $('#gFullL', out).hidden = tr && !o.subjectBox;
+    $('#gMethod', out).value = tr ? 'trace' : 'stylized'; $$('[data-sty]', out).forEach(e => e.hidden = tr); $$('[data-tr]', out).forEach(e => e.hidden = !tr); $$('[data-tool]', out).forEach(b => b.setAttribute('aria-pressed', String(b.dataset.tool === (o.tool || 'grinder')))); $('#gPaintOn', out).checked = o.tpaint !== false; $$('[data-pamt]', out).forEach(b => { b.setAttribute('aria-pressed', String(b.dataset.pamt === (o.tpaintAmt || 'medium'))); b.disabled = o.tpaint === false; }); $('#gPaintNote', out).hidden = o.tpaint === false; $('#gWq', out).value = toU(o.widthIn); $('#gWqU', out).textContent = cm() ? 'cm' : 'in'; $('#gTCol', out).value = o.tcolors || 12; $('#gTColV', out).textContent = o.tcolors || 12; $$('[data-lead]', out).forEach(b => b.setAttribute('aria-pressed', String(b.dataset.lead === o.line))); $$('[data-fill]', out).forEach(x => x.setAttribute('aria-pressed', String(x.dataset.fill === fillMode))); $('#gFullL', out).hidden = tr && !o.subjectBox;
     $('#gDetL', out).textContent = tr ? 'Detail' : 'Detail on subject'; $('#gSimL', out).textContent = tr ? 'Simplify' : 'Simplicity';
-    $('#gIntro', out).textContent = tr ? 'Made on this device — no key needed. Traces your actual photo: its real colour zones become glass pieces, each shown in its average photo colour, with lead lines on every boundary. Small slivers are merged into their most similar neighbour so every piece stays cuttable.' : 'Made on this device — no key needed. Stylized: lead lines follow the photo’s main outlines with simplified shapes; every piece is a closed shape sized for a beginner.';
+    $('#gIntro', out).textContent = tr ? 'Made on this device — no key needed. A copy of your photo is traced and vectorised: lead lines follow its real edges (outline, eyes, windows), pieces use the photo’s own colours reduced to the glass colours you choose, and slivers, rings and sharp necks are removed so every piece is cuttable. Your original photo is kept unchanged for comparison.' : 'Made on this device — no key needed. Stylized: lead lines follow the photo’s main outlines with simplified shapes; every piece is a closed shape sized for a beginner.';
     $('#gCol', out).value = o.colors; $('#gColV', out).textContent = o.colors; $('#gSim', out).value = o.simplicity; $('#gSimV', out).textContent = o.simplicity; $('#gDet', out).value = o.detail; $('#gDetV', out).textContent = o.detail;
     $('#gW', out).value = toU(o.widthIn); $('#gH', out).value = o.heightIn ? toU(o.heightIn) : ''; $('#gH', out).placeholder = P ? 'auto ' + toU(P.heightIn) : 'auto';
     $$('[data-u]', out).forEach(b => b.setAttribute('aria-pressed', String(b.dataset.u === o.unit))); $('#gLine', out).value = o.line; $('#gFocus', out).checked = o.focus; $('#gFull', out).checked = !o.zoom; $('#gFull', out).disabled = !o.focus; $('#gStyle', out).value = o.style || 'auto'; $('#gSmall', out).value = o.smallFeat || 'pieces'; $('#gPaint', out).checked = o.paint !== false; $('#gPaint', out).disabled = o.smallFeat === 'off';
@@ -77,12 +104,16 @@ async function glassOpen(out, { image, saved } = {}) {
     if (!P || picking) return;
     const pattern = (x = {}) => svgFit(glassSVG(P, { fill: fillMode, ...x }));
     $('#gOpWrap', out).hidden = view !== 'overlay'; $('#gOpV', out).textContent = Math.round(op * 100) + '%';
-    if (view === 'original') prev.innerHTML = pattern({ photo: img, opacity: 0, numbers: false, lines: false });
-    else if (view === 'overlay') prev.innerHTML = pattern({ photo: img, opacity: op });
+    $$('[data-pv="trace"]', out).forEach(b => b.hidden = !P.trace); if (view === 'trace' && !P.trace) view = 'pattern';
+    $$('[data-pv="paint"]', out).forEach(b => b.hidden = !(P.paint && P.paint.lines.length)); if (view === 'paint' && !(P.paint && P.paint.lines.length)) view = 'cut';
+    if (view === 'trace') prev.innerHTML = svgFit(glassTraceSVG(P));
+    else if (view === 'paint') prev.innerHTML = pattern({ cut: true, numbers: true, paintGuide: true });
+    else if (view === 'original') prev.innerHTML = pattern({ photo: img, opacity: 0, numbers: false, lines: false });
     else if (view === 'side') prev.innerHTML = `<div class="side2"><figure>${pattern({ photo: img, opacity: 0, numbers: false, lines: false })}<figcaption>Original</figcaption></figure><figure>${pattern({ numbers: false })}<figcaption>Pattern</figcaption></figure></div>`;
-    else prev.innerHTML = pattern({ cut: view === 'cut' });
+    else if (view === 'overlay') prev.innerHTML = pattern({ photo: img, opacity: op, numbers: false });
+    else prev.innerHTML = pattern({ cut: view === 'cut', numbers: view === 'cut' || o.method === 'stylized' });
     const s = P.stats, U = cm() ? 'cm' : 'in', sq = cm() ? ' cm²' : ' sq in', A = v => cm() ? (v * 6.4516).toFixed(0) : v.toFixed(1);
-    $('#gSum', out).textContent = `${s.pieces} pieces · ${toU(P.widthIn)} × ${toU(P.heightIn)} ${U} — change size and more in Advanced`;
+    $('#gSum', out).innerHTML = view === 'trace' && P.trace ? `<b>Faithful trace</b>: ${P.trace.regions.toLocaleString()} colour regions — a vector copy of your photo, not cuttable. Switch to <b>Pattern</b> or <b>Cut lines</b> for the ${s.pieces}-piece pattern.` : `<b>${s.pieces} pieces</b> · smallest ${A(s.smallestIn)}${sq} · ${toU(P.widthIn)} × ${toU(P.heightIn)} ${U}${s.toolLabel ? ' · ' + esc(s.toolLabel) : ''}<br><span class="muted">Pieces stay ≥ ${A(s.minAreaIn)}${sq}${s.featAreaIn && s.featAreaIn < s.minAreaIn ? ` (eyes and other small features ≥ ${A(s.featAreaIn)}${sq})` : ''} and ${cm() ? (s.minWidthIn * 2.54).toFixed(1) + ' cm' : fracIn(s.minWidthIn)} wide for your tools — a wider panel keeps more of the photo.</span>`;
     $('#gDiffBadge', out).innerHTML = `<span class="diff ${s.difficulty === 'Beginner' ? 'beg' : 'int'}">${s.difficulty}</span>`;
     $('#gStats', out).innerHTML = `<div class="res-head"><b>${s.pieces} pieces · ${toU(P.widthIn)} × ${toU(P.heightIn)} ${U}</b><span class="diff ${s.difficulty === 'Beginner' ? 'beg' : 'int'}">${s.difficulty}</span></div>
       ${s.outlineKept != null ? `<p class="small"><b>Outline kept: ${s.outlineKept}%</b> <span class="muted">— share of the subject’s main outlines that became lead lines${P.silhouette && P.silhouette.length ? '; the silhouette is one continuous, slightly bolder lead line' : ''}.</span></p>` : ''}
@@ -149,7 +180,7 @@ async function glassOpen(out, { image, saved } = {}) {
     const b = $('#gGrok', out); if (b) b.onclick = askGrok;
   };
   const rebuild = () => { clearTimeout(t); prev.classList.add('busy'); t = setTimeout(async () => {
-    try { const id = await glassImageData(img, o); P = glassBuild(id, o); recog = null; fill(); draw(); if (scan) { scan.result = P; scan.recog = null; scan.title = 'Stained glass · ' + P.stats.pieces + ' pieces'; await DB.put('scans', scan); } }
+    try { const id = await glassImageData(img, o), t0 = performance.now(); P = o.method === 'stylized' ? glassBuild(id, o) : await glassTraceRun(id, o); P.ms = Math.round(performance.now() - t0); window.__glassMs = P.ms; recog = null; fill(); draw(); if (scan) { scan.result = P; scan.recog = null; scan.title = 'Stained glass · ' + P.stats.pieces + ' pieces'; await DB.put('scans', scan); } }
     catch (e) { prev.innerHTML = `<p style="color:#900;padding:10px">Couldn’t build the pattern: ${esc(e.message)}</p>`; }
     finally { prev.classList.remove('busy'); } }, 220); };
   const askGrok = async () => {
@@ -164,6 +195,12 @@ async function glassOpen(out, { image, saved } = {}) {
   fill();
   if (hintOn('glassTip')) { $('#gTip', out).hidden = false; $('#gTipX', out).onclick = () => { hintSeen('glassTip'); $('#gTip', out).hidden = true; }; }
   $('#gMethod', out).onchange = e => { o.method = e.target.value; fill(); if (o.method === 'stylized' && !o.subjectBox) autoFirst(); else rebuild(); };
+  $('#gPaintOn', out).onchange = e => { o.tpaint = e.target.checked; fill(); rebuild(); };
+  $$('[data-pamt]', out).forEach(b => b.onclick = () => { o.tpaintAmt = b.dataset.pamt; fill(); rebuild(); });
+  $$('[data-tool]', out).forEach(b => b.onclick = () => { o.tool = b.dataset.tool; fill(); rebuild(); });
+  $('#gWq', out).onchange = e => { const v = fromU(+e.target.value); if (v >= 2 && v <= 120) { o.widthIn = v; delete o.heightIn; fill(); rebuild(); } };
+  $('#gTCol', out).oninput = e => { o.tcolors = +e.target.value; $('#gTColV', out).textContent = o.tcolors; rebuild(); };
+  $$('[data-lead]', out).forEach(b => b.onclick = () => { o.line = b.dataset.lead; $('#gLine', out).value = o.line; fill(); rebuild(); });
   $('#gCol', out).oninput = e => { o.colors = +e.target.value; $('#gColV', out).textContent = o.colors; rebuild(); };
   $('#gSim', out).oninput = e => { o.simplicity = +e.target.value; $('#gSimV', out).textContent = o.simplicity; rebuild(); };
   $('#gDet', out).oninput = e => { hintSeen('glassTip'); $('#gTip', out).hidden = true; o.detail = +e.target.value; $('#gDetV', out).textContent = o.detail; rebuild(); };
@@ -184,7 +221,9 @@ async function glassOpen(out, { image, saved } = {}) {
   $('#gFG', out).onchange = e => { o.frameGlass = e.target.value; rebuild(); };
   const fname = ext => `stained-glass-${P.stats.pieces}pc-${P.widthIn}x${P.heightIn}in.${ext}`;
   $('#gSVG', out).onclick = () => P && shareOrDownload(fname('svg'), glassSVG(P), 'image/svg+xml');
+  $('#gPNG', out).onclick = async () => { if (!P) return; const b = await glassRenderPNG(P, { fill: fillMode }); shareOrDownload(fname('png'), b, 'image/png'); };
   $('#gPDF', out).onclick = () => P && shareOrDownload(fname('pdf'), glassPDF(P, { guide: tips }).blob(), 'application/pdf');
+  $('#gPaintPDF', out).onclick = () => P && shareOrDownload(fname('paint.pdf').replace('.paint.pdf', '-paintguide.pdf'), glassPDF(P, { cut: true, paintGuide: true, guide: tips, title: 'Paint guide' }).blob(), 'application/pdf');
   $('#gCut', out).onclick = () => P && shareOrDownload(fname('cutlines.pdf').replace('.cutlines.pdf', '-cutlines.pdf'), glassPDF(P, { cut: true, guide: tips }).blob(), 'application/pdf');
   $('#gSave', out).onclick = async () => {
     if (!P) return; if (!scan) scan = { id: uid(), at: Date.now(), mode: 'glass', kind: 'glass', image: img, thumb: await thumbOf(img) };

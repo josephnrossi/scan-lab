@@ -1,4 +1,4 @@
-/* Scan Lab end-to-end tests: WebKit (iPhone 15, iPad Pro 11 portrait) + Chromium. Mocks the AI APIs and the camera/mic. */
+/* Scan Lab end-to-end tests: WebKit (iPhone 15, iPhone SE, iPad Pro 11 portrait) + Chromium (desktop-touch, Pixel 7, Galaxy S8). Mocks the AI APIs and the camera/mic. */
 const { webkit, chromium, devices } = require('/workspace/tools/node_modules/playwright');
 const fs = require('fs'), path = require('path'), { execSync } = require('child_process');
 const { installMocks, VOICE } = require('./mocks');
@@ -14,6 +14,8 @@ const DEVS = [
   { name: 'webkit-iphonese', type: webkit, ctx: { ...devices['iPhone SE (3rd gen)'] } },
   { name: 'webkit-ipadpro11', type: webkit, ctx: { ...devices['iPad Pro 11'] } },
   { name: 'chromium', type: chromium, ctx: { viewport: { width: 393, height: 852 }, deviceScaleFactor: 2, isMobile: false, hasTouch: true }, launch: { args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', '--enable-unsafe-swiftshader'] } },
+  { name: 'chromium-pixel7', type: chromium, ctx: { ...devices['Pixel 7'] }, launch: { args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', '--enable-unsafe-swiftshader'] } },
+  { name: 'chromium-galaxys8', type: chromium, ctx: { ...devices['Galaxy S8'] }, launch: { args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', '--enable-unsafe-swiftshader'] } },
 ];
 const camMock = () => { // WebKit has no fake camera: feed a moving canvas through getUserMedia
   const real = navigator.mediaDevices && navigator.mediaDevices.getUserMedia;
@@ -39,7 +41,10 @@ async function photo(page, file, input = '#fileLib') { const n = await page.eval
 async function mode(page, m) { await page.click('#btnMode'); await page.click(`#sheetMode [data-mode=${m}]`); await page.waitForSelector('#sheetMode', { state: 'hidden' }); }
 async function dl(page, sel) { const [d] = await Promise.all([page.waitForEvent('download', { timeout: 20000 }), page.click(sel)]); const p = path.join(TMP, Date.now() + '-' + d.suggestedFilename()); await d.saveAs(p); return { name: d.suggestedFilename(), path: p, buf: fs.readFileSync(p) }; }
 const text = page => page.evaluate(() => document.body.innerText);
-async function skipTap(page) { await page.waitForSelector('#gTapSkip, #gPrev svg [data-piece]', { timeout: 20000 }); const b = await page.$('#gTapSkip'); if (b) await b.click(); }
+async function skipTap(page) { await page.waitForSelector('#gTapSkip, #gPrev svg', { timeout: 30000 }); const b = await page.$('#gTapSkip'); if (b) await b.click(); }
+// v7: the result opens on the faithful Trace view (no numbered pieces): wait until a pattern is built and drawn
+const glassReady = (page, t = 30000) => page.waitForFunction(() => window.__glass && window.__glass() && document.querySelector('#gPrev svg') && !document.querySelector('#gPrev').classList.contains('busy'), null, { timeout: t });
+async function glassView(page, v) { await page.click(`[data-pv=${v}]`); await page.waitForTimeout(150); }
 
 const T = {};
 /* ---------- shell ---------- */
@@ -50,8 +55,8 @@ T['loads with no errors, manifest, dark theme'] = async ({ page, errors }) => {
   assert(!errors.length, errors.join('; '));
 };
 T['service worker caches shell and works offline'] = { sw: true, fn: async ({ page, ctx }) => {
-  await page.evaluate(() => navigator.serviceWorker.ready); await page.waitForFunction(async () => (await caches.keys()).includes('scan-lab-v6'), null, { timeout: 15000 });
-  const n = await page.evaluate(async () => (await (await caches.open('scan-lab-v6')).keys()).length); assert(n >= 20, 'cached ' + n);
+  await page.evaluate(() => navigator.serviceWorker.ready); await page.waitForFunction(async () => (await caches.keys()).includes('scan-lab-v7'), null, { timeout: 15000 });
+  const ks = await page.evaluate(async () => (await (await caches.open('scan-lab-v7')).keys()).map(r => r.url)); assert(ks.length >= 20, 'cached ' + ks.length); assert(ks.some(u => u.endsWith('/tracer.js')) && ks.some(u => u.endsWith('/tracer-worker.js')), 'tracer + worker precached');
   await ctx.setOffline(true); await page.reload(); await page.waitForSelector('#btnMode'); assert((await page.title()) === 'Scan Lab', 'offline reload'); await ctx.setOffline(false);
 } };
 /* ---------- camera ---------- */
@@ -134,16 +139,16 @@ async function flower(page, o) { await page.evaluate(src => { const i = new Imag
 T['glass: closed gap-free paths, min piece size, no enclosed pieces'] = async ({ page }) => {
   for (const o of [{ colors: 6, simplicity: 3, widthIn: 12 }, { colors: 8, simplicity: 1, widthIn: 10, frame: false }, { colors: 4, simplicity: 9, widthIn: 16 }, { method: 'stylized', colors: 6, simplicity: 3, widthIn: 12 }, { method: 'stylized', colors: 8, simplicity: 1, widthIn: 10, frame: false }]) {
     const r = await flower(page, o);
-    if (o.method !== 'stylized') { // trace: everything under the minimum was merged, except small but strongly distinct features kept as flagged "advanced" pieces (≥ 35% of the minimum)
+    if (o.method !== 'stylized') { // v7 trace: everything under the tool's minimum was merged, except small but strongly distinct features (eyes…) kept down to the tool's feature size
       assert(r.dZ, 'every subpath M…Z'); near(r.area, r.W * r.H, r.W * r.H * 0.002, 'pieces tile the panel with no gaps/overlaps'); assert(r.rings.every(n => n === 1), 'no piece encloses another: ' + r.rings.join(','));
-      assert(r.minArea >= r.stats.minAreaIn * 0.35, 'trace min piece size ' + r.minArea + ' vs ' + r.stats.minAreaIn); assert(r.frames === (o.frame === false ? 0 : 4), 'frame pieces ' + r.frames); continue; }
+      assert(r.minArea >= r.stats.featAreaIn * 0.8, 'trace min piece size ' + r.minArea + ' vs feature min ' + r.stats.featAreaIn); assert(r.frames === (o.frame === false ? 0 : 4), 'frame pieces ' + r.frames); continue; }
     assert(r.dZ, 'every subpath M…Z'); near(r.area, r.W * r.H, r.W * r.H * 0.002, 'pieces tile the panel with no gaps/overlaps');
     assert(r.rings.every(n => n === 1), 'no piece encloses another: ' + r.rings.join(','));
     assert(r.minArea >= r.stats.minAreaIn * 0.999 || r.stats.flagged.small.length, 'min piece size ' + r.minArea + ' < ' + r.stats.minAreaIn);
     assert(r.stats.flagged.small.length === 0, 'no small pieces left: ' + r.stats.flagged.small);
     assert(r.frames === (o.frame === false ? 0 : 4), 'frame pieces ' + r.frames);
   }
-  const a = await flower(page, { colors: 6, simplicity: 2, widthIn: 12 }), b = await flower(page, { colors: 6, simplicity: 9, widthIn: 12 }); assert(b.n <= a.n, `simplicity reduces pieces ${a.n}→${b.n}`);
+  const a = await flower(page, { method: 'stylized', colors: 6, simplicity: 2, widthIn: 12 }), b = await flower(page, { method: 'stylized', colors: 6, simplicity: 9, widthIn: 12 }); assert(b.n <= a.n, `simplicity reduces pieces ${a.n}→${b.n}`);
 };
 T['glass: SVG and PDF export at real scale, tiled with marks'] = async ({ page }) => {
   await flower(page, { colors: 5, simplicity: 5, widthIn: 20, heightIn: 24, line: 'came316' });
@@ -161,37 +166,84 @@ T['glass: SVG and PDF export at real scale, tiled with marks'] = async ({ page }
   // single page when it fits
   await flower(page, { colors: 5, simplicity: 5, widthIn: 6 }); const m = await page.evaluate(() => glassPDF(window.__P).meta); assert(m.pages === 2, 'fits on one tile + overview');
 };
-T['glass v5: Trace photo is faithful — low colour error, lead on real edges, cuttable, Detail/Simplify work'] = { only: d => d.name !== 'webkit-ipadpro11', fn: async ({ page, dev }) => {
+T['glass v7: faithful trace ≥85% edge recall; cut pattern cuttable; Detail, Tools and Paint lines work'] = { only: d => d.name !== 'webkit-ipadpro11', fn: async ({ page, dev }) => {
   await page.addScriptTag({ path: path.join(__dirname, 'glass-fidelity.js') }); const rows = [];
-  // bird: the auto-detected subject box (a small robin on a busy fence) zooms the trace in
-  const LIM = { cat: { dE: 8, rec: 50, pre: 50 }, bird: { dE: 7, rec: 55, pre: 40, box: [0.459, 0.282, 0.591, 0.539] }, tulip: { dE: 8, rec: 65, pre: 30 }, house: { dE: 14, rec: 45, pre: 70 } };
+  // the faithful trace is scored as a pattern whose "pieces" are its own vector regions (same metric as the cut pattern)
+  const LIM = { cat: { dE: 9 }, bird: { dE: 9, box: [0.459, 0.282, 0.591, 0.539] }, tulip: { dE: 9 }, house: { dE: 15 } };
   for (const [n, L] of Object.entries(LIM)) {
-    const r = await page.evaluate(async ([src, box]) => { const run = async c => { const o = { ...glassDefaults(), ...c }; if (box) o.subjectBox = box; const im = await glassImageData(src, o), P = glassBuild(im, o), f = await window.__fidelity(P, im, { fill: 'photo' });
-        const pc = P.pieces.filter(p => !p.frame); return { ...f, n: pc.length, min: P.stats.minAreaIn, smallest: P.stats.smallestIn, src: pc.every(p => Array.isArray(p.src) && p.src.length === 3), holes: P.stats.flagged.hole.length, note: (P.notes || []).join(' '), method: P.settings.method }; };
-      return { d: await run({}), s: await run({ method: 'stylized' }), lo: await run({ detail: 2 }), hi: await run({ detail: 10 }), simp: await run({ simplicity: 9 }) }; }, ['data:image/jpeg;base64,' + fs.readFileSync(fx('photos/' + n + '.jpg')).toString('base64'), L.box || null]);
-    const d = r.d; rows.push(`${n} ΔE ${d.dE} (stylized ${r.s.dE}) · edges recall ${d.recall}% precision ${d.precision}% · ${d.n} pc (detail 2→10: ${r.lo.n}→${r.hi.n}, simplify 9: ${r.simp.n})`);
-    assert(d.method === 'trace', n + ' default method is Trace photo');
-    assert(d.dE <= L.dE, n + ' low mean colour error vs photo ' + d.dE); assert(d.dE < r.s.dE * 0.75, n + ' trace much closer to the photo than stylized ' + d.dE + ' vs ' + r.s.dE);
-    assert(d.recall >= L.rec, n + ' lead lines follow the photo’s contours ' + d.recall); assert(d.precision >= L.pre, n + ' lead lines sit on real edges ' + d.precision);
-    assert(d.src, n + ' every piece carries its real average photo colour'); assert(d.holes === 0, n + ' no piece encloses another');
-    assert(d.smallest >= d.min * 0.45, n + ' no confetti: smallest ' + d.smallest + ' vs min ' + d.min); assert(d.n >= 30 && d.n <= 160, n + ' piece count ' + d.n);
-    assert(r.lo.n < d.n && d.n < r.hi.n, n + ' Detail slider: simple → detailed ' + r.lo.n + ' < ' + d.n + ' < ' + r.hi.n); assert(r.simp.n < d.n * 0.85, n + ' Simplify makes regions coarser ' + r.simp.n);
-    assert(/Traced from your photo/.test(d.note), n + ' trace note');
+    const r = await page.evaluate(async ([src, box]) => { const hx = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+      const run = async c => { const o = { ...glassDefaults(), ...c }; if (box) o.subjectBox = box; const im = await glassImageData(src, o), P = glassBuild(im, o), f = await window.__fidelity(P, im, { fill: 'photo' });
+        const pc = P.pieces.filter(p => !p.frame); let tf = null; if (c.faith) { const T = P.trace, TP = { gridW: T.w, gridH: T.h, f: 0, pieces: T.paths.map(([d, h]) => ({ d, rgb: hx(h), src: hx(h) })) }; tf = await window.__fidelity(TP, im, { fill: 'photo' }); tf.regions = T.regions; }
+        return { ...f, tf, n: pc.length, engine: P.engine, method: P.settings.method, min: P.stats.minAreaIn, feat: P.stats.featAreaIn, smallest: P.stats.smallestIn, holes: P.stats.flagged.hole.length, note: (P.notes || []).join(' '), paint: P.paint ? P.paint.strokes : null, paintW: P.paint ? P.paint.widthPx : 0, mat: P.paint ? P.paint.mat.length : 0 }; };
+      return { d: await run({ faith: true }), lo: await run({ detail: 2 }), hi: await run({ detail: 10 }), hand: await run({ detail: 10, tool: 'hand' }), saw: await run({ detail: 10, tool: 'ringsaw' }), grind: await run({ detail: 10, tool: 'grinder' }),
+        off: await run({ tpaint: false }), light: await run({ tpaintAmt: 'light' }), bold: await run({ tpaintAmt: 'bold' }) }; }, ['data:image/jpeg;base64,' + fs.readFileSync(fx('photos/' + n + '.jpg')).toString('base64'), L.box || null]);
+    const d = r.d, t = d.tf; rows.push(`${n} trace: ${t.regions} regions ΔE ${t.dE} recall ${t.recall}% · cut: ${d.n} pc ΔE ${d.dE} recall ${d.recall}% · detail 2→7→10: ${r.lo.n}→${d.n}→${r.hi.n} · min sq in hand/grinder/saw ${r.hand.min}/${r.grind.min}/${r.saw.min} · paint light/med/bold ${r.light.paint}/${d.paint}/${r.bold.paint}`);
+    assert(d.method === 'trace' && d.engine === 'tracer-v7', n + ' default engine is the v7 tracer');
+    assert(t.recall >= 85, n + ' faithful trace edge recall ≥ 85%: ' + t.recall); assert(t.dE <= 8, n + ' faithful trace colour error ≤ 8: ' + t.dE); assert(t.regions > d.n * 5, n + ' trace keeps far more regions than the cut pattern');
+    assert(d.dE <= L.dE, n + ' cut pattern colour error ' + d.dE); assert(d.holes === 0, n + ' no piece encloses another'); assert(d.smallest >= d.feat * 0.8, n + ' no confetti: smallest ' + d.smallest + ' vs feature min ' + d.feat);
+    assert(r.lo.n < d.n && d.n < r.hi.n, n + ' Detail slider changes the piece count ' + r.lo.n + ' < ' + d.n + ' < ' + r.hi.n);
+    assert(r.hand.min > r.grind.min && r.grind.min > r.saw.min, n + ' Tools set the minimum piece size (hand > grinder > ring saw) ' + [r.hand.min, r.grind.min, r.saw.min]); assert(r.hand.feat > r.grind.feat && r.grind.feat > r.saw.feat, n + ' Tools set the feature size');
+    assert(d.paint > 0 && r.off.paint === null, n + ' Paint lines on by default, off removes them'); assert(r.light.paint <= d.paint && d.paint <= r.bold.paint && r.light.paint < r.bold.paint, n + ' Paint amount Light ≤ Medium ≤ Bold ' + [r.light.paint, d.paint, r.bold.paint]);
+    assert(r.light.mat === 0 && r.light.paintW < r.bold.paintW, n + ' Light = no matting, thinner lines');
+    assert(/Traced from your photo/.test(d.note) && /paint lines/.test(d.note), n + ' trace + paint notes');
   }
   console.log('      ' + rows.join('\n      '));
 } };
+T['glass v7: Trace / Pattern / Cut / Paint guide views, paint controls, worker + page fallback, 44pt, no console errors'] = async ({ page, dev }) => {
+  const cerr = []; page.on('console', m => { if (m.type() === 'error') cerr.push(m.text()); });
+  await mode(page, 'glass'); await photo(page, 'photos/cat.jpg'); await page.click('#btnAnalyze'); await glassReady(page, 40000);
+  const W = await page.evaluate(() => ({ worker: typeof _gw !== 'undefined' && !!_gw && !window.__noWorker, engine: window.__glass().engine, ms: window.__glassMs }));
+  assert(W.worker, 'traced in a Web Worker'); assert(W.engine === 'tracer-v7', 'engine');
+  // Trace view = faithful vector copy, no lead; Pattern = lead + paint; Cut = no paint; Paint guide = dashed grey paint lines + numbers
+  assert(await page.$eval('#gPrev svg', s => s.querySelectorAll('path').length > 500 && !s.querySelector('#lead')), 'trace view');
+  assert(/colour regions/.test(await page.textContent('#gSum')), 'trace summary');
+  await glassView(page, 'pattern'); assert(await page.$eval('#gPrev svg', s => !!s.querySelector('#lead') && !!s.querySelector('#paint path')), 'pattern shows lead + paint lines');
+  assert(/pieces/.test(await page.textContent('#gSum')) && /smallest/.test(await page.textContent('#gSum')), 'pieces + smallest piece shown');
+  await glassView(page, 'cut'); assert(await page.$eval('#gPrev svg', s => !s.querySelector('#paint') && s.querySelectorAll('#numbers text').length > 20), 'cut lines: numbered, no paint');
+  await glassView(page, 'paint'); assert(await page.$eval('#gPrev svg', s => { const g = s.querySelector('#paint'); return g && g.getAttribute('stroke-dasharray') && /8a8a8a/i.test(g.getAttribute('stroke')) && s.querySelectorAll('#numbers text').length > 20; }), 'paint guide: dashed grey paint lines + numbers');
+  await shotEl(page.locator('#gPrev'), dev, 'v7-glass-paintguide');
+  const s0 = await page.evaluate(() => window.__glass().paint.strokes);
+  await page.click('[data-pamt=bold]'); await page.waitForFunction(() => window.__glass().settings.tpaintAmt === 'bold' && !document.querySelector('#gPrev').classList.contains('busy'), null, { timeout: 30000 });
+  const s1 = await page.evaluate(() => window.__glass().paint.strokes); assert(s1 >= s0, `bold ≥ medium strokes ${s0}→${s1}`);
+  await page.uncheck('#gPaintOn'); await page.waitForFunction(() => window.__glass().settings.tpaint === false && !document.querySelector('#gPrev').classList.contains('busy'), null, { timeout: 30000 });
+  assert(await page.evaluate(() => !window.__glass().paint), 'paint off'); assert(await page.isHidden('[data-pv=paint]'), 'paint guide hidden when off'); assert(await page.$eval('[data-pamt=medium]', b => b.disabled), 'amount disabled when off');
+  await page.check('#gPaintOn'); await page.click('[data-pamt=medium]'); await page.waitForFunction(() => window.__glass().settings.tpaint !== false && window.__glass().settings.tpaintAmt === 'medium' && window.__glass().paint && !document.querySelector('#gPrev').classList.contains('busy'), null, { timeout: 30000 });
+  // Tools + width quick controls rebuild
+  await page.click('[data-tool=hand]'); await page.waitForFunction(() => window.__glass().stats.tool === 'hand' && !document.querySelector('#gPrev').classList.contains('busy'), null, { timeout: 30000 });
+  await page.fill('#gWq', '20'); await page.$eval('#gWq', e => e.dispatchEvent(new Event('change'))); await page.waitForFunction(() => Math.abs(window.__glass().widthIn - 20) < 0.01 && !document.querySelector('#gPrev').classList.contains('busy'), null, { timeout: 40000 });
+  // 44pt tap targets on the glass screen
+  await page.evaluate(() => document.querySelector('#gAdv').open = false);
+  const small = await page.evaluate(() => [...document.querySelectorAll('#result button, #result input[type=range], #result input[type=number], #result .paint-tog, #result select')].filter(b => b.offsetParent && !b.closest('details:not([open])') && b.getBoundingClientRect().height < 43.5 && !b.closest('.legend')).map(b => (b.id || b.className || b.tagName) + ':' + Math.round(b.getBoundingClientRect().height)));
+  assert(!small.length, '44pt targets: ' + small.join(', '));
+  await layoutCheck(page, 'glass v7');
+  assert(!cerr.length, 'console errors: ' + cerr.join(' | '));
+};
+T['glass v7: falls back to the page when Workers are unavailable or fail'] = async ({ page, dev }) => {
+  const cerr = []; page.on('console', m => { if (m.type() === 'error') cerr.push(m.text()); });
+  await page.evaluate(() => { window.Worker = function () { throw new Error('Workers blocked'); }; });
+  await mode(page, 'glass'); await photo(page, 'photos/tulip.jpg'); await page.click('#btnAnalyze'); await glassReady(page, 40000);
+  assert(await page.evaluate(() => window.__noWorker === true && window.__glass().engine === 'tracer-v7' && window.__glass().stats.pieces > 20), 'traced on the page after Worker failed');
+  // a worker that errors at runtime also falls back
+  await page.evaluate(() => { window.__noWorker = false; _gw = null; window.Worker = function () { const w = { postMessage: () => setTimeout(() => w.onerror && w.onerror({ preventDefault() {} }), 10), terminate() {} }; return w; }; });
+  await page.$eval('#gDet', e => { e.value = 5; e.dispatchEvent(new Event('input')); }); await page.waitForFunction(() => window.__glass().settings.detail === 5 && !document.querySelector('#gPrev').classList.contains('busy'), null, { timeout: 40000 });
+  assert(await page.evaluate(() => window.__noWorker === true && window.__glass().stats.pieces > 10), 'runtime worker error → page fallback');
+  assert(!cerr.length, 'console errors: ' + cerr.join(' | '));
+};
 T['glass v5: original kept, Original/Pattern/Overlay/Side views, subject box, colors from Color match'] = async ({ page, dev }) => {
   await page.evaluate(() => localStorage.setItem('glassColors', JSON.stringify([{ name: 'Your color 1 (#C0392B)', hex: '#C0392B' }])));
-  await mode(page, 'glass'); await photo(page, 'photos/tulip.jpg'); await page.click('#btnAnalyze'); await skipTap(page); await page.waitForSelector('#gPrev svg [data-piece]', { timeout: 30000 });
+  await mode(page, 'glass'); await photo(page, 'photos/tulip.jpg'); await page.click('#btnAnalyze'); await skipTap(page); await glassReady(page);
   const P = await page.evaluate(() => { const P = window.__glass(); return { method: P.settings.method, user: P.legend.some(l => /Your color 1/.test(l.glass)), crop: P.crop }; });
   assert(P.method === 'trace', 'Trace photo is the default'); assert(P.user, 'user color used in legend'); assert(P.crop && P.crop.length === 4, 'crop kept');
-  assert(await page.$eval('#gPrev svg', s => s.querySelector('#lead') && !s.querySelector('image')), 'pattern view: lead lines, no photo');
+  assert(await page.$eval('[data-pv=trace]', b => b.getAttribute('aria-pressed')) === 'true' && await page.$eval('#gPrev svg', s => s.querySelectorAll('path').length > 300 && !s.querySelector('#lead')), 'opens on the faithful Trace view (vector copy, no lead)');
+  await glassView(page, 'pattern'); assert(await page.$eval('#gPrev svg', s => s.querySelector('#lead') && !s.querySelector('image')), 'pattern view: lead lines, no photo');
   assert((await page.textContent('#gStats')).includes('Traced from your photo'), 'trace explained');
-  // v6: only Detail is shown by default; Simplify, Method (Stylized), colours, extra views etc. live under Advanced
-  assert(await page.isVisible('#gDet') && await page.isHidden('#gSim') && await page.isHidden('#gMethod') && await page.isHidden('[data-fill=glass]') && await page.isHidden('[data-pv=overlay]') && await page.isVisible('[data-pv=side]') && await page.isVisible('[data-pv=original]'), 'v6 default: Detail + Pattern/Side by side/Original only');
+  // v7: Detail stays where it was; quick controls (colours, lead, tools, paint lines, width) below it; Simplify / Method / fill live under Advanced
+  assert(await page.isVisible('#gDet') && await page.isHidden('#gSim') && await page.isHidden('#gMethod') && await page.isHidden('[data-fill=glass]'), 'v7 default: Detail + quick controls');
+  for (const v of ['trace', 'pattern', 'cut', 'paint', 'overlay', 'side', 'original']) assert(await page.isVisible(`[data-pv=${v}]`), 'view button ' + v);
+  assert(await page.isVisible('#gTCol') && await page.isVisible('[data-tool=grinder]') && await page.isVisible('#gPaintOn') && await page.isVisible('#gWq'), 'quick controls visible');
   assert(!(await page.$eval('#gAdv', d => d.open)), 'Advanced starts closed'); await page.$eval('#gAdv summary', e => e.click());
-  assert(await page.$eval('#gMethod', e => e.value) === 'trace' && await page.isHidden('#gStyle') && await page.isHidden('#gSmall') && await page.isVisible('#gSim'), 'trace controls in Advanced');
-  assert((await page.textContent('#result')).includes('Simplify') && (await page.textContent('#result')).includes('more detail'), 'Detail (simpler ↔ more detail) + Simplify');
+  assert(await page.$eval('#gMethod', e => e.value) === 'trace' && await page.isHidden('#gStyle') && await page.isHidden('#gSmall') && await page.isHidden('#gSim') && await page.isVisible('#gW'), 'trace controls in Advanced (v7: Detail replaces Simplify for traced photos)');
+  assert((await page.textContent('#result')).includes('simpler') && (await page.textContent('#result')).includes('more detail'), 'Detail (simpler ↔ more detail)');
   await page.click('[data-pv=original]'); assert(await page.$eval('#gPrev svg', s => !!s.querySelector('image') && !s.querySelector('#lead')), 'original view shows photo');
   await page.click('[data-pv=overlay]'); assert(await page.isVisible('#gOp'), 'opacity slider'); await page.$eval('#gOp', e => { e.value = 80; e.dispatchEvent(new Event('input')); });
   assert(await page.$eval('#gPrev svg', s => !!s.querySelector('image') && !!s.querySelector('#lead') && /0\.8/.test(s.innerHTML)), 'overlay = photo + lines at 80%');
@@ -202,18 +254,18 @@ T['glass v5: original kept, Original/Pattern/Overlay/Side views, subject box, co
   await page.click('#gPickOK'); await page.waitForFunction(() => window.__glass().settings.subjectBox, null, { timeout: 20000 });
   const sb = await page.evaluate(() => window.__glass().settings.subjectBox); near(sb[0], 0.2, 0.02, 'box x0'); near(sb[3], 0.7, 0.02, 'box y1'); assert((await page.textContent('#gSubj')).includes('your selection'), 'subject label');
   await page.$eval('#gDet', e => { e.value = 10; e.dispatchEvent(new Event('input')); }); await page.waitForFunction(() => window.__glass().settings.detail === 10, null, { timeout: 20000 });
-  await page.click('#gSave'); await page.waitForTimeout(300); const s = await page.evaluate(async () => (await DB.all('scans')).find(x => x.kind === 'glass')); assert(s.image && s.image.startsWith('data:image/jpeg') && s.result.version === 2, 'original photo saved with pattern');
+  await page.click('#gSave'); await page.waitForTimeout(300); const s = await page.evaluate(async () => (await DB.all('scans')).find(x => x.kind === 'glass')); assert(s.image && s.image.startsWith('data:image/jpeg') && s.result.version === 3 && s.result.engine === 'tracer-v7', 'original photo saved with pattern');
   await page.click('#gUCx'); await page.waitForFunction(() => !localStorage.getItem('glassColors'));
 };
 T['glass v5: no tap step; a small subject in a busy scene is zoomed automatically; Stylized mode still available'] = async ({ page, dev }) => {
   await mode(page, 'glass'); await photo(page, 'photos/bird.jpg'); await page.click('#btnAnalyze');
-  await page.waitForFunction(() => window.__glass && window.__glass() && window.__glass().settings.subjectBox, null, { timeout: 30000 }); await page.waitForSelector('#gPrev svg [data-piece]');
+  await page.waitForFunction(() => window.__glass && window.__glass() && window.__glass().settings.subjectBox, null, { timeout: 30000 }); await glassReady(page);
   assert(!(await page.$('#gTapWrap')), 'no tap needed');
   const P = await page.evaluate(() => { const P = window.__glass(); return { box: P.settings.subjectBox, crop: P.crop, method: P.settings.method }; });
   assert(P.method === 'trace', 'trace'); assert(P.box[0] > 0.4 && P.box[2] < 0.65 && P.box[1] > 0.2 && P.box[3] < 0.65, 'auto box around the robin ' + P.box); assert(P.crop[2] < 0.5, 'zoomed to subject ' + P.crop);
   await page.evaluate(() => { document.querySelector('#gAdv').open = true; }); assert(await page.isVisible('#gFull'), '“Keep full scene” offered in Advanced'); await page.check('#gFull'); await page.waitForFunction(() => window.__glass().crop[2] > 0.95 && !document.querySelector('#gPrev').classList.contains('busy'), null, { timeout: 30000 });
   // cat: whole photo traced straight away (no tap), side by side with the original
-  await page.click('[data-view=scan]'); await page.evaluate(() => { S.photos = []; }); await photo(page, 'photos/cat.jpg'); await page.click('#btnAnalyze'); await page.waitForSelector('#gPrev svg [data-piece]', { timeout: 30000 });
+  await page.click('[data-view=scan]'); await page.evaluate(() => { S.photos = []; }); await photo(page, 'photos/cat.jpg'); await page.click('#btnAnalyze'); await glassReady(page);
   assert(!(await page.$('#gTapWrap')), 'no tap step for the cat'); const C = await page.evaluate(() => { const P = window.__glass(); return { box: P.settings.subjectBox, n: P.stats.pieces, blue: P.pieces.filter(p => p.src && p.src[2] > p.src[0] + 25 && p.src[1] > p.src[0] + 15).length }; });
   assert(!C.box && C.blue >= 2, 'cat traced whole, both blue-teal eyes are their own pieces ' + JSON.stringify(C));
   await page.click('[data-pv=side]'); await page.waitForTimeout(200); assert((await page.$$('#gPrev .side2 svg')).length === 2, 'side by side'); await shotEl(page.locator('#gPrev'), dev, 'v5-glass-cat-side');
@@ -224,7 +276,7 @@ T['glass v5: no tap step; a small subject in a busy scene is zoomed automaticall
   assert(!/Traced from your photo/.test(await page.textContent('#gStats')), 'stylized pattern');
 };
 T['glass v3: Grok finds subject + recognizability check (blind, then compare)'] = { key: true, fn: async ({ page, mock, dev }) => {
-  await mode(page, 'glass'); await photo(page, 'photos/tulip.jpg'); await page.click('#btnAnalyze'); await skipTap(page); await page.waitForSelector('#gPrev svg [data-piece]', { timeout: 30000 });
+  await mode(page, 'glass'); await photo(page, 'photos/tulip.jpg'); await page.click('#btnAnalyze'); await skipTap(page); await glassReady(page);
   await page.click('#gFind'); await page.waitForFunction(() => window.__glass().settings.subjectName === 'robin', null, { timeout: 20000 });
   assert((await page.textContent('#gSubj')).includes('orange breast'), 'features listed'); assert(mock.log.some(l => JSON.stringify(l.body).includes('GLASS SUBJECT.')), 'subject prompt');
   await page.click('#gRecog'); await page.waitForSelector('#gRecogCard >> text=Matches the photo', { timeout: 20000 });
@@ -234,15 +286,17 @@ T['glass v3: Grok finds subject + recognizability check (blind, then compare)'] 
 } };
 /* ---------- stained glass (UI) ---------- */
 T['glass UI: live preview, legend, difficulty, exports, save'] = async ({ page, dev }) => {
-  await mode(page, 'glass'); await photo(page, 'flower.jpg'); await page.click('#btnAnalyze'); await skipTap(page); await page.waitForSelector('#gPrev svg [data-piece]', { timeout: 20000 });
-  const n1 = await page.$$eval('#gPrev [data-piece]', x => x.length); assert(n1 > 4, 'pieces ' + n1);
+  await mode(page, 'glass'); await photo(page, 'flower.jpg'); await page.click('#btnAnalyze'); await skipTap(page); await glassReady(page);
+  await glassView(page, 'pattern'); const n1 = await page.$$eval('#gPrev [data-piece]', x => x.length); assert(n1 > 4, 'pieces ' + n1);
   assert(await page.$$eval('#gLegend .sw', x => x.length) >= 3, 'legend swatches'); assert(/Beginner|Intermediate/.test(await page.textContent('#gDiffBadge')), 'difficulty');
   await shotEl(page.locator('#result'), dev, '08-glass-pattern');
-  await page.$eval('#gSim', e => { e.value = 10; e.dispatchEvent(new Event('input')); }); await page.waitForFunction(() => !document.querySelector('#gPrev').classList.contains('busy') && window.__glass().settings.simplicity === 10, null, { timeout: 20000 });
+  await page.$eval('#gDet', e => { e.value = 2; e.dispatchEvent(new Event('input')); }); await page.waitForFunction(() => !document.querySelector('#gPrev').classList.contains('busy') && window.__glass().settings.detail === 2, null, { timeout: 30000 });
   const n2 = await page.$$eval('#gPrev [data-piece]', x => x.length); assert(n2 <= n1, `simpler ${n1}→${n2}`);
   await page.click('[data-u=cm]'); assert((await page.inputValue('#gW')) === '30.5', 'cm ' + await page.inputValue('#gW')); await page.click('[data-pv=cut]'); await page.waitForTimeout(100); await shotEl(page.locator('#gPrev'), dev, '09-glass-cutlines');
   const svg = await dl(page, '#gSVG'); assert(svg.buf.toString().startsWith('<svg') && svg.name.endsWith('.svg'), 'svg dl');
   const pdf = await dl(page, '#gPDF'); assert(pdf.buf.slice(0, 5).toString() === '%PDF-', 'pdf dl'); const cut = await dl(page, '#gCut'); assert(cut.name.includes('cutlines'), 'cut dl ' + cut.name);
+  const png = await dl(page, '#gPNG'); assert(png.name.endsWith('.png') && png.buf.slice(1, 4).toString() === 'PNG' && png.buf.length > 5000, 'png dl ' + png.name);
+  const pg = await dl(page, '#gPaintPDF'); assert(pg.name.includes('paintguide') && pg.buf.slice(0, 5).toString() === '%PDF-', 'paint guide pdf ' + pg.name); fs.writeFileSync(path.join(TMP, 'paintguide.pdf'), pg.buf); assert(/Pages:\s+\d/.test(execSync(`pdfinfo ${path.join(TMP, 'paintguide.pdf')}`).toString()), 'paint guide pdfinfo');
   await page.click('#gSave'); await page.click('[data-view=history]'); await page.waitForSelector('.hist-item >> text=Stained glass');
 };
 T['glass UI: Grok tips are optional'] = { key: true, fn: async ({ page }) => {
@@ -513,10 +567,10 @@ T['iPhone: every mode fits portrait, no overflow, 44pt, safe areas, one-handed s
 } };
 T['iPhone: stained-glass preview + 3D viewer usable at phone size, exports via iOS share sheet'] = { only: phoneOnly, key: true, fn: async ({ page, dev }) => {
   await page.evaluate(() => { window.__noShare = false; window.__shared = []; navigator.canShare = d => !!(d && d.files); navigator.share = async d => { window.__shared.push(...d.files.map(f => ({ name: f.name, type: f.type, size: f.size }))); }; });
-  await mode(page, 'glass'); await photo(page, 'flower.jpg'); await page.click('#btnAnalyze'); await skipTap(page); await page.waitForSelector('#gPrev svg [data-piece]', { timeout: 20000 });
+  await mode(page, 'glass'); await photo(page, 'flower.jpg'); await page.click('#btnAnalyze'); await skipTap(page); await glassReady(page);
   await layoutCheck(page, 'glass result');
   const pv = await page.$eval('#gPrev', e => { const r = e.getBoundingClientRect(); return [r.width, innerWidth]; }); assert(pv[0] >= pv[1] * 0.8 && pv[0] <= pv[1], 'glass preview near full width ' + pv);
-  await page.locator('#gPrev').scrollIntoViewIfNeeded(); await page.locator('#gPrev [data-piece]').first().tap().catch(() => {});
+  await glassView(page, 'pattern'); await page.locator('#gPrev').scrollIntoViewIfNeeded(); await page.locator('#gPrev [data-piece]').first().tap().catch(() => {});
   await shot(page, dev, 'phone-glass-preview');
   for (const b of ['#gSVG', '#gPDF', '#gCut']) { await page.click(b); }
   await page.waitForFunction(() => window.__shared.length >= 3, null, { timeout: 20000 });

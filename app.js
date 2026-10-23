@@ -1,5 +1,5 @@
 /* Scan Lab — core: camera, modes, food/materials analysis, food log, history, settings. */
-const APP_VERSION = 'v6';
+const APP_VERSION = 'v7';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));

@@ -205,3 +205,21 @@ details.adv-card[open]>summary::after{content:'▴'}
 .act-more[open]{flex-basis:100%}
 .actbar .saved-note{justify-content:center}
 .toast button{pointer-events:auto}
+/* v7 stained glass: 4 views, quick controls under Detail */
+.seg-grid4{display:grid;grid-template-columns:repeat(4,1fr)}
+.seg-grid4 button{padding:0 4px;font-size:14px;line-height:1.15}
+.gquick{display:grid;grid-template-columns:1fr;gap:4px;margin-top:4px}
+.gquick .field>span{font-size:15px;color:var(--text)}
+.gquick input[type=range]{width:100%;min-height:44px;accent-color:var(--accent)}
+.lead-seg{width:100%;margin-top:4px}
+.lead-seg button{display:flex;flex-direction:column;align-items:center;justify-content:center;font-weight:600}
+.lead-seg button small{font-size:11px;font-weight:400;color:var(--muted)}
+.seg-grid3{display:grid;grid-template-columns:repeat(3,1fr)}
+.seg-grid3 button{padding:0 4px;font-size:14px;line-height:1.15}
+.tool-seg{width:100%;margin-top:4px}
+.gwq input{width:7em}
+.paint-seg{width:100%;margin-top:4px}
+.paint-seg button:disabled{opacity:.45}
+.paint-tog{display:flex;align-items:center;gap:10px;font-size:15px}
+.paint-tog input{width:22px;height:22px;flex:none}
+.paint-tog{min-height:44px}

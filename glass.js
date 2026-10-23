@@ -17,6 +17,7 @@ const GLASS_PALETTE = [
 ];
 const gHex = c => '#' + c.map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('');
 const cdist = (a, b) => { const rm = (a[0] + b[0]) / 2, dr = a[0] - b[0], dg = a[1] - b[1], db = a[2] - b[2]; return Math.sqrt((2 + rm / 256) * dr * dr + 4 * dg * dg + (2 + (255 - rm) / 256) * db * db); };
+function glassTraceEnv(o) { return { palette: GLASS_PALETTE, line: GLASS_LINES[o.line] || GLASS_LINES.foil116, frameGlass: o.frameGlass || '', user: (o.userColors || []).filter(u => /^#[0-9a-f]{6}$/i.test(u.hex)).map(u => [u.name, ...[1, 3, 5].map(i => parseInt(u.hex.slice(i, i + 2), 16))]) }; }
 function nearestGlass(c, user) {
   let best = GLASS_PALETTE[0], bd = 1e9; for (const p of GLASS_PALETTE) { const d = cdist(c, [p[1], p[2], p[3]]); if (d < bd) { bd = d; best = p; } }
   if (user && user.length) { let ub = null, ud = 1e9; for (const u of user) { const d = cdist(c, [u[1], u[2], u[3]]); if (d < ud) { ud = d; ub = u; } } if (ub && ud <= bd * 1.6 + 45) return { name: ub[0], rgb: [ub[1], ub[2], ub[3]], user: true }; }
@@ -823,10 +824,10 @@ async function glassAutoSubject(src) {
   if (!best) return { box: null, busy: true }; return { box: await glassTapBox(im, best.fx, best.fy), at: [best.fx, best.fy] };
 }
 /* ---------- main build ---------- */
-function glassDefaults() { return { method: 'trace', colors: 6, simplicity: 4, detail: 7, zoom: true, style: 'auto', smallFeat: 'pieces', paint: true, widthIn: 12, unit: 'in', focus: true, frame: true, frameIn: 1, line: 'foil116', frameGlass: '' }; }
+function glassDefaults() { return { method: 'trace', colors: 6, tcolors: 12, tool: 'grinder', tpaint: true, tpaintAmt: 'medium', simplicity: 4, detail: 7, zoom: true, style: 'auto', smallFeat: 'pieces', paint: true, widthIn: 12, unit: 'in', focus: true, frame: true, frameIn: 1, line: 'foil116', frameGlass: '' }; }
 function glassGeometry(o, aspect) { // aspect = h/w of image
   const fw = o.frame ? o.frameIn : 0, widthIn = Math.max(2, +o.widthIn || 12), heightIn = Math.max(2, o.heightIn ? +o.heightIn : r2(widthIn * aspect));
-  const long = Math.max(widthIn, heightIn), hi = o.method !== 'stylized', ppi = Math.max(160 / long, Math.min(hi ? 40 : 24, (hi ? 720 : 420) / long)); // traced photos get a finer grid so curves follow the photo
+  const long = Math.max(widthIn, heightIn), hi = o.method !== 'stylized', ppi = hi && o.engine !== 'v6' ? Math.max(160 / long, Math.min(80, 800 / long)) : Math.max(160 / long, Math.min(hi ? 40 : 24, (hi ? 720 : 420) / long)); // traced photos get a finer grid so curves follow the photo
   const gridW = Math.round(widthIn * ppi), gridH = Math.round(heightIn * ppi), f = Math.round(fw * ppi);
   return { widthIn, heightIn, ppi: gridW / widthIn, gridW, gridH, f, innerW: gridW - 2 * f, innerH: gridH - 2 * f };
 }
@@ -835,6 +836,10 @@ function glassRules(o) { const s = Math.max(1, Math.min(10, +o.simplicity || 5))
 
 /* img: {width,height,data(RGBA)} already sized innerW x innerH */
 function glassBuild(img, o) {
+  o = { ...glassDefaults(), ...o };
+  // v7: "Trace photo" runs the PhotoTracer engine (tracer.js: faithful trace → cut pattern → paint lines); o.engine = 'v6' keeps the legacy tracer below
+  if (o.method !== 'stylized' && o.engine !== 'v6' && typeof PhotoTracer !== 'undefined') { const G7 = glassGeometry(o, img.aspect || img.height / img.width);
+    return PhotoTracer.trace({ ...img, f: o.frame ? G7.f : 0 }, o, glassTraceEnv(o)); }
   o = { ...glassDefaults(), ...o }; const tr = o.method !== 'stylized', G = glassGeometry(o, img.aspect || img.height / img.width), rules = tr ? traceRules(o) : glassRules(o);
   if (G.innerW !== img.width || G.innerH !== img.height) throw new Error(`image is ${img.width}×${img.height}, expected ${G.innerW}×${G.innerH}`);
   const W = G.gridW, H = G.gridH, iw = img.width, ih = img.height, ppi = G.ppi, notes = [];
@@ -1096,7 +1101,7 @@ async function glassImageData(src, o) {
 }
 
 /* ---------- SVG ---------- */
-function glassSVG(P, { cut = false, numbers = true, scaleBar = true, fill = 'glass', photo = null, opacity = 1, lines: showLines = true } = {}) {
+function glassSVG(P, { cut = false, numbers = true, scaleBar = true, fill = 'glass', photo = null, opacity = 1, lines: showLines = true, paint: showPaint = true, paintGuide = false } = {}) {
   const lw = P.lineIn * P.ppi, lum = c => 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2], colOf = p => cut ? [255, 255, 255] : fill === 'photo' && p.src ? p.src : p.rgb;
   const body = P.pieces.map(p => `<path data-piece="${p.n}" d="${p.segs.map(segsToD).join('')}" fill="${gHex(colOf(p))}" fill-rule="evenodd"/>`).join('');
   const lines = P.pieces.map(p => `<path d="${p.segs.map(segsToD).join('')}"/>`).join('');
@@ -1112,27 +1117,37 @@ function glassSVG(P, { cut = false, numbers = true, scaleBar = true, fill = 'gla
 <g id="pieces"${opacity < 1 ? ` fill-opacity="${opacity}"` : ''}>${body}</g>
 ${showLines ? '' : '<!--'}<g id="lead" fill="none" stroke="${cut ? '#9a9a9a' : '#1a1a1a'}" stroke-width="${+lw.toFixed(3)}" stroke-linejoin="round" stroke-linecap="round">${lines}${sil ? `<path id="silhouette" d="${sil}" stroke-width="${+(lw * 1.6).toFixed(3)}"/>` : ''}${(P.overlay || []).length ? `<path id="overlay-lead" d="${P.overlay.map(l => 'M' + l.map(q => q.join(' ')).join('L')).join('')}"${cut ? ' stroke-dasharray="4 2"' : ''}/>` : ''}</g>${showLines ? '' : '-->'}
 ${showLines && (det || dots) ? `<g id="detail" fill="none" stroke="${cut ? '#b0b0b0' : '#1a1a1a'}" stroke-width="${+(lw * 0.5).toFixed(3)}" stroke-linecap="round" stroke-linejoin="round"${cut ? ' stroke-dasharray="2 2"' : ''}><path d="${det}"/>${dots}</g>` : ''}
+${glassPaintSVG(P, cut ? (paintGuide ? 'guide' : '') : showPaint ? 'color' : '')}
 ${cut ? `<g id="cut" fill="none" stroke="#000" stroke-width="${+(0.012 * P.ppi).toFixed(3)}">${lines}</g>` : ''}
 <g id="numbers" font-family="Helvetica, Arial, sans-serif" font-weight="700" text-anchor="middle" dominant-baseline="central">${nums}</g>
 </svg>`;
 }
 
+/* paint lines (glass-paint trace lines + light matting) — 'color': dark brown strokes on the colour pattern; 'guide': thin dashed grey on the printable paint guide */
+function glassPaintSVG(P, mode) {
+  const pt = P.paint; if (!mode || !pt || !(pt.lines.length || pt.mat.length)) return '';
+  const d = pt.lines.map(l => 'M' + l.map(q => q[0] + ' ' + q[1]).join('L')).join('');
+  if (mode === 'guide') return `<g id="paint" fill="none" stroke="#8a8a8a" stroke-width="${+Math.max(0.6, 0.012 * P.ppi).toFixed(2)}" stroke-dasharray="${+(0.05 * P.ppi).toFixed(2)} ${+(0.035 * P.ppi).toFixed(2)}" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></g>`;
+  const mat = pt.mat.length ? `<g transform="translate(${P.f} ${P.f})" fill="#2a1a10">${pt.mat.map(([m, a]) => `<path d="${m}" fill-opacity="${a}"/>`).join('')}</g>` : '';
+  return `<g id="paint">${mat}<path d="${d}" fill="none" stroke="#2a1a10" stroke-opacity="0.85" stroke-width="${pt.widthPx}" stroke-linecap="round" stroke-linejoin="round"/></g>`;
+}
 /* ---------- PDF (real scale, tiled on Letter with alignment marks) ---------- */
-function glassPDF(P, { cut = false, guide = null, title = 'Stained glass pattern' } = {}) {
+function glassPDF(P, { cut = false, guide = null, title = 'Stained glass pattern', paintGuide = false } = {}) {
+  const pm = P.paint && P.paint.lines.length ? (cut ? (paintGuide ? 'guide' : '') : 'color') : '';
   const doc = new PDFDoc(), M = 36, PW = 612, PH = 792, pw = (PW - 2 * M) / 72, ph = (PH - 2 * M) / 72, ov = 0.5;
   const fits = P.widthIn <= pw && P.heightIn <= ph;
   const cols = fits ? 1 : Math.ceil((P.widthIn - ov) / (pw - ov)), rows = fits ? 1 : Math.ceil((P.heightIn - ov) / (ph - ov)), sx = pw - ov, sy = ph - ov;
   const lum = c => 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2], lw = P.lineIn * P.ppi;
   // cover page
   const c = doc.page(); let y = M;
-  c.text(M, y, 18, title + (cut ? ' — cut lines' : ''), true); y += 26;
+  c.text(M, y, 18, title + (cut ? (paintGuide ? ' — dashed paint lines + cut lines' : ' — cut lines') : ''), true); y += 26;
   c.text(M, y, 11, `Finished size ${P.widthIn} × ${P.heightIn} in (${(P.widthIn * 2.54).toFixed(1)} × ${(P.heightIn * 2.54).toFixed(1)} cm) · ${P.stats.pieces} pieces · ${P.lineLabel}${P.frameIn ? ` · ${P.frameIn}″ frame` : ''}`); y += 16;
   c.text(M, y, 12, `Difficulty: ${P.stats.difficulty}`, true); y += 16;
   for (const r of P.stats.reasons) y = c.para(M + 8, y, 520, 9.5, '• ' + r);
   y += 6;
   // preview fit into box
   const boxW = 250, boxH = 300, s = Math.min(boxW / P.gridW, boxH / P.gridH);
-  c.op(`q ${f2(s)} 0 0 ${f2(-s)} ${M} ${f2(PH - y)} cm`); drawPieces(c, P, cut, lw); c.op('Q');
+  c.op(`q ${f2(s)} 0 0 ${f2(-s)} ${M} ${f2(PH - y)} cm`); drawPieces(c, P, cut, lw, pm); c.op('Q');
   // legend at right
   let ly = y; c.text(M + 270, ly, 11, cut ? 'Pieces' : 'Glass colors', true); ly += 15;
   for (const e of P.legend) { const rgb = [parseInt(e.hex.slice(1, 3), 16), parseInt(e.hex.slice(3, 5), 16), parseInt(e.hex.slice(5, 7), 16)]; c.fill(...rgb).stroke(80, 80, 80).lw(0.5).rect(M + 270, PH - ly - 12, 14, 12, 'B'); c.text(M + 290, ly, 9.5, `${e.glass} — ${e.count} pc, ${e.areaIn.toFixed(1)} sq in`); ly = c.para(M + 290, ly + 12, 230, 7.5, 'Pieces ' + e.pieces.join(', '), false, [90, 90, 90]) + 2; if (ly > 700) break; }
@@ -1147,7 +1162,7 @@ function glassPDF(P, { cut = false, guide = null, title = 'Stained glass pattern
   for (let r = 0; r < rows; r++) for (let q = 0; q < cols; q++) {
     const p = doc.page(), x0 = q * sx, y0 = r * sy, sc = 72 / P.ppi;
     p.op('q').op(`${M} ${M} ${PW - 2 * M} ${PH - 2 * M} re W n`);
-    p.op(`${f2(sc)} 0 0 ${f2(-sc)} ${f2(M - x0 * 72)} ${f2(PH - M + y0 * 72)} cm`); drawPieces(p, P, cut, lw);
+    p.op(`${f2(sc)} 0 0 ${f2(-sc)} ${f2(M - x0 * 72)} ${f2(PH - M + y0 * 72)} cm`); drawPieces(p, P, cut, lw, pm);
     // numbers in page coords
     p.op('Q').op('q').op(`${M} ${M} ${PW - 2 * M} ${PH - 2 * M} re W n`);
     for (const pc of P.pieces) { const px = M + (pc.label[0] / P.ppi - x0) * 72, py = PH - M - (pc.label[1] / P.ppi - y0) * 72, fs = Math.max(6, pc.font * sc); if (px < M - 20 || px > PW - M + 20 || py < M - 20 || py > PH - M + 20) continue; const t = String(pc.n), w = t.length * fs * 0.55; p.textAt(px - w / 2, py - fs * 0.35, fs, t, true, cut || lum(pc.rgb) > 140 ? [0, 0, 0] : [255, 255, 255]); }
@@ -1161,17 +1176,18 @@ function glassPDF(P, { cut = false, guide = null, title = 'Stained glass pattern
     footer(p, rows * cols > 1 ? `Row ${r + 1} of ${rows}, column ${q + 1} of ${cols}` : 'Full size', pg++);
   }
   function footer(p, label, n) {
-    p.text(M, 14, 8.5, `Scan Lab · ${title}${cut ? ' — cut lines' : ''} · ${label} · page ${n} of ${1 + rows * cols}`, false, [90, 90, 90]);
+    p.text(M, 14, 8.5, `Scan Lab · ${title}${cut ? (paintGuide ? ' — paint lines' : ' — cut lines') : ''} · ${label} · page ${n} of ${1 + rows * cols}`, false, [90, 90, 90]);
     p.stroke(0, 0, 0).lw(1).line(PW - M - 72, 18, PW - M, 18).line(PW - M - 72, 14, PW - M - 72, 22).line(PW - M, 14, PW - M, 22); p.text(PW - M - 72, PH - 30, 7, '1 inch — check with a ruler', false, [90, 90, 90]);
   }
   doc.meta = { pages: 1 + rows * cols, rows, cols, scale: 72 / P.ppi };
   return doc;
 }
-function drawPieces(p, P, cut, lw) {
+function drawPieces(p, P, cut, lw, pm) {
   for (const pc of P.pieces) { const c = cut ? [255, 255, 255] : pc.rgb; p.fill(...c); p.path(pc.segs.flat()); p.op('f*'); }
   p.stroke(cut ? 150 : 26, cut ? 150 : 26, cut ? 150 : 26).lw(lw).op('1 j');
   for (const pc of P.pieces) { p.path(pc.segs.flat()); p.op('S'); }
   if (P.silhouette && P.silhouette.length) { p.lw(lw * 1.6).op('1 J'); for (const s of P.silhouette) { p.path(s); p.op('S'); } p.op('0 J'); }
+  if (pm) { const pl = P.paint.lines, w = pm === 'guide' ? Math.max(0.6, 0.012 * P.ppi) : P.paint.widthPx; p.lw(w).op('1 J 1 j'); if (pm === 'guide') { p.stroke(138, 138, 138).op(`[${f2(0.05 * P.ppi)} ${f2(0.035 * P.ppi)}] 0 d`); } else p.stroke(42, 26, 16); for (const l of pl) { p.path([['M', ...l[0]], ...l.slice(1).map(q => ['L', ...q])]); p.op('S'); } p.op('[] 0 d 0 J'); p.stroke(cut ? 150 : 26, cut ? 150 : 26, cut ? 150 : 26).lw(lw); }
   if (P.overlay && P.overlay.length) { p.lw(lw).op('1 J'); if (cut) p.op('[4 2] 0 d'); for (const l of P.overlay) { p.path([['M', ...l[0]], ...l.slice(1).map(q => ['L', ...q])]); p.op('S'); } p.op('[] 0 d 0 J'); }
   if (P.detail && P.detail.length) { p.stroke(cut ? 170 : 26, cut ? 170 : 26, cut ? 170 : 26).lw(lw * 0.5).op('1 J'); if (cut) p.op('[2 2] 0 d'); for (const l of P.detail) { p.path([['M', ...l[0]], ...l.slice(1).map(q => ['L', ...q])]); p.op('S'); } p.op('[] 0 d 0 J'); }
   for (const d of P.dots || []) { const k = 0.5523, { cx, cy, rx, ry } = d; if (!cut) p.fill(...[1, 3, 5].map(i => parseInt(d.hex.slice(i, i + 2), 16))); else p.stroke(170, 170, 170).lw(lw * 0.4);
